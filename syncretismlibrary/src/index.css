@@ -1,0 +1,44 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@font-face {
+  font-family: 'Geist';
+  src: url('https://geistfont.vercel.app/GeistVF.ttf') format('truetype');
+  font-weight: 100;
+  font-display: swap;
+}
+
+:root {
+  --bg: #f7f5f0;
+  --text: #1a1a1a;
+  --muted: #6b6b6b;
+  --accent: #1a1a1a;
+  --border: #e5e0d8;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: Geist, system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #ebe8e3;
+}
+::-webkit-scrollbar-thumb {
+  background: #d0cbc2;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #b8b2a8;
+}
