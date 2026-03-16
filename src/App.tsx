@@ -74,7 +74,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
-  const [mode, setMode] = useState<SortMode>('date');
+  const [mode, setMode] = useState<SortMode>('alphabetical');
   const [creationOpen, setCreationOpen] = useState(false);
   const [detailPiece, setDetailPiece] = useState<Piece | null>(null);
   const [editPiece, setEditPiece] = useState<Piece | null>(null);

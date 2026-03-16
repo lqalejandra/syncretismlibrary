@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from 'react';
-import html2canvas from 'html2canvas';
 import type { Piece } from '../types';
 import { getPreviewAsync } from '../preview';
 import { bitmapToBinaryString } from '../conversion';
@@ -37,18 +36,51 @@ export function DetailModal({
     };
   }, [open, piece?.id]);
 
-  const handleSaveImage = async () => {
-    if (!artRef.current) return;
+  const handleSaveImage = () => {
+    if (!preview || !piece) return;
     try {
-      const canvas = await html2canvas(artRef.current, {
-        backgroundColor: '#f7f5f0',
-        scale: 2,
-        useCORS: true,
-      });
-      const link = document.createElement('a');
-      link.download = `${(piece?.title ?? 'syncretismlibrary').replace(/[^a-z0-9]/gi, '_')}.png`;
-      link.href = canvas.toDataURL('image/png');
-      link.click();
+      const cellSize = 4;
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      canvas.width = preview.cols * cellSize;
+      canvas.height = preview.rows * cellSize;
+
+      ctx.fillStyle = '#f7f5f0';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      if (preview.type === 'ascii') {
+        ctx.fillStyle = '#1a1a1a';
+        ctx.font = `${cellSize * 2}px "IBM Plex Mono", monospace`;
+        ctx.textBaseline = 'top';
+        const lines = preview.output.split('\n');
+        lines.forEach((line, row) => {
+          ctx.fillText(line, 0, row * cellSize * 2.2);
+        });
+      } else {
+        for (let y = 0; y < preview.rows; y++) {
+          const row = preview.grid[y] ?? [];
+          for (let x = 0; x < preview.cols; x++) {
+            const v = row[x] ?? 0;
+            ctx.fillStyle = v ? '#1a1a1a' : '#f7f5f0';
+            ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+          }
+        }
+      }
+
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) return;
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.download = `${(piece.title ?? 'syncretismlibrary').replace(/[^a-z0-9]/gi, '_')}.png`;
+          link.href = url;
+          link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 100);
+        },
+        'image/png'
+      );
     } catch (err) {
       console.error(err);
       alert('Export failed');
