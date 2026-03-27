@@ -120,6 +120,60 @@ export function DetailModal({
     }
   };
 
+  const handleSaveBinaryImage = async () => {
+    if (!piece) return;
+    try {
+      const binaryPreview = await getPreviewAsync({ ...piece, type: 'bitmap' });
+      if (binaryPreview.type !== 'bitmap') return;
+
+      const cellSize = 8;
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      canvas.width = binaryPreview.cols * cellSize;
+      canvas.height = binaryPreview.rows * cellSize;
+
+      ctx.fillStyle = '#f7f5f0';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      for (let y = 0; y < binaryPreview.rows; y++) {
+        const row = binaryPreview.grid[y] ?? [];
+        for (let x = 0; x < binaryPreview.cols; x++) {
+          const v = row[x] ?? 0;
+          ctx.fillStyle = v ? '#1a1a1a' : '#f7f5f0';
+          ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+        }
+      }
+
+      drawGridOverlayOnCanvas(
+        ctx,
+        binaryPreview.cols,
+        binaryPreview.rows,
+        cellSize
+      );
+
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) return;
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.download = `${(piece.title ?? 'syncretismlibrary').replace(
+            /[^a-z0-9]/gi,
+            '_'
+          )}_binary_grid.png`;
+          link.href = url;
+          link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 100);
+        },
+        'image/png'
+      );
+    } catch (err) {
+      console.error(err);
+      alert('Binary export failed');
+    }
+  };
+
   const handleDelete = () => {
     if (!piece) return;
     if (window.confirm(`Delete "${piece.title}"?`)) {
@@ -212,6 +266,13 @@ export function DetailModal({
             className="border border-accent bg-bg px-4 py-2 text-sm font-medium text-accent hover:bg-border"
           >
             Save Image
+          </button>
+          <button
+            type="button"
+            onClick={handleSaveBinaryImage}
+            className="border border-accent bg-bg px-4 py-2 text-sm font-medium text-accent hover:bg-border"
+          >
+            Save Binary + Grid
           </button>
           <button
             type="button"
