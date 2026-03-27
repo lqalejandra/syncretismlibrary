@@ -69,6 +69,10 @@ export function DetailModal({
         }
       }
 
+      if (piece.includeGridInSavedImage) {
+        drawGridOverlayOnCanvas(ctx, preview.cols, preview.rows, cellSize);
+      }
+
       canvas.toBlob(
         (blob) => {
           if (!blob) return;
@@ -248,6 +252,43 @@ export function DetailModal({
       </div>
     </div>
   );
+}
+
+function drawGridOverlayOnCanvas(
+  ctx: CanvasRenderingContext2D,
+  cols: number,
+  rows: number,
+  cellSize: number
+) {
+  ctx.save();
+  for (let x = 0; x <= cols; x++) {
+    ctx.strokeStyle =
+      x % 10 === 0 ? 'rgba(0,0,0,0.22)' : 'rgba(0,0,0,0.1)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x * cellSize + 0.5, 0);
+    ctx.lineTo(x * cellSize + 0.5, rows * cellSize);
+    ctx.stroke();
+  }
+  for (let y = 0; y <= rows; y++) {
+    ctx.strokeStyle =
+      y % 10 === 0 ? 'rgba(0,0,0,0.22)' : 'rgba(0,0,0,0.1)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, y * cellSize + 0.5);
+    ctx.lineTo(cols * cellSize, y * cellSize + 0.5);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.font = `${Math.max(10, cellSize * 2)}px "IBM Plex Mono", monospace`;
+  for (let x = 0; x <= cols; x += 10) {
+    ctx.fillText(String(x), x * cellSize + 2, 12);
+  }
+  for (let y = 0; y <= rows; y += 10) {
+    ctx.fillText(String(y), 2, y * cellSize + 12);
+  }
+  ctx.restore();
 }
 
 function BitmapDisplay({ grid }: { grid: number[][] }) {

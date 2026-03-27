@@ -14,6 +14,8 @@ export interface Piece {
   charSet?: string;
   customChars?: string;
   font?: string;
+  showPreviewGrid?: boolean;
+  includeGridInSavedImage?: boolean;
 }
 
 export type SortOption = 'date-desc' | 'date-asc' | 'title-az' | 'title-za';

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import type { ReactNode } from 'react';
 import type { Piece } from '../types';
 import { CHAR_SETS, FONT_OPTIONS } from '../types';
 import {
@@ -24,6 +25,8 @@ export interface CreationFormState {
   charSet: string;
   customChars: string;
   font: string;
+  showPreviewGrid: boolean;
+  includeGridInSavedImage: boolean;
 }
 
 const defaultFormState: CreationFormState = {
@@ -40,6 +43,8 @@ const defaultFormState: CreationFormState = {
   charSet: 'Standard',
   customChars: '',
   font: 'IBM Plex Mono',
+  showPreviewGrid: true,
+  includeGridInSavedImage: false,
 };
 
 interface CreationModalProps {
@@ -78,6 +83,8 @@ export function CreationModal({
         charSet: editPiece.charSet ?? 'Standard',
         customChars: editPiece.customChars ?? '',
         font: editPiece.font ?? 'IBM Plex Mono',
+        showPreviewGrid: editPiece.showPreviewGrid ?? true,
+        includeGridInSavedImage: editPiece.includeGridInSavedImage ?? false,
       });
     } else {
       setForm(defaultFormState);
@@ -170,6 +177,8 @@ export function CreationModal({
           ? form.customChars
           : undefined,
       font: form.type === 'ascii' ? form.font : undefined,
+      showPreviewGrid: form.showPreviewGrid,
+      includeGridInSavedImage: form.includeGridInSavedImage,
     };
     if (form.inputType === 'image' && form.inputImageDataURL) {
       const size = Math.round((form.inputImageDataURL.length * 3) / 4 / 1024);
@@ -413,6 +422,36 @@ export function CreationModal({
             Invert
           </label>
 
+          <label className="flex items-center gap-2 text-sm text-muted">
+            <input
+              type="checkbox"
+              checked={form.showPreviewGrid}
+              onChange={(e) =>
+                setForm((prev) => ({
+                  ...prev,
+                  showPreviewGrid: e.target.checked,
+                }))
+              }
+              className="border-border accent-accent"
+            />
+            Show preview grid + axes
+          </label>
+
+          <label className="flex items-center gap-2 text-sm text-muted">
+            <input
+              type="checkbox"
+              checked={form.includeGridInSavedImage}
+              onChange={(e) =>
+                setForm((prev) => ({
+                  ...prev,
+                  includeGridInSavedImage: e.target.checked,
+                }))
+              }
+              className="border-border accent-accent"
+            />
+            Include grid in saved image export
+          </label>
+
           <div>
             <label className="mb-1 block text-sm text-muted">
               Threshold: {form.threshold}
@@ -525,14 +564,26 @@ export function CreationModal({
             {preview && !previewError && (
               <>
                 {preview.type === 'ascii' ? (
-                  <pre
-                    className="whitespace-pre font-mono text-text text-sm leading-tight"
-                    style={{ fontFamily: `${form.font}, monospace` }}
+                  <PreviewWithGrid
+                    cols={preview.cols}
+                    rows={preview.rows}
+                    showGrid={form.showPreviewGrid}
                   >
-                    {preview.output}
-                  </pre>
+                    <pre
+                      className="whitespace-pre font-mono text-text text-sm leading-tight"
+                      style={{ fontFamily: `${form.font}, monospace` }}
+                    >
+                      {preview.output}
+                    </pre>
+                  </PreviewWithGrid>
                 ) : (
-                  <BitmapPreview grid={preview.grid} />
+                  <PreviewWithGrid
+                    cols={preview.cols}
+                    rows={preview.rows}
+                    showGrid={form.showPreviewGrid}
+                  >
+                    <BitmapPreview grid={preview.grid} />
+                  </PreviewWithGrid>
                 )}
               </>
             )}
@@ -567,6 +618,93 @@ function BitmapPreview({ grid }: { grid: number[][] }) {
           />
         ))
       )}
+    </svg>
+  );
+}
+
+function PreviewWithGrid({
+  cols,
+  rows,
+  showGrid,
+  children,
+}: {
+  cols: number;
+  rows: number;
+  showGrid: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <div className="relative inline-block">
+      {children}
+      {showGrid && <GridOverlay cols={cols} rows={rows} />}
+    </div>
+  );
+}
+
+function GridOverlay({ cols, rows }: { cols: number; rows: number }) {
+  if (!cols || !rows) return null;
+
+  const xMarks = Array.from(
+    { length: Math.floor(cols / 10) + 1 },
+    (_, i) => i * 10
+  );
+  const yMarks = Array.from(
+    { length: Math.floor(rows / 10) + 1 },
+    (_, i) => i * 10
+  );
+
+  return (
+    <svg
+      className="pointer-events-none absolute inset-0 h-full w-full"
+      viewBox={`0 0 ${cols} ${rows}`}
+      preserveAspectRatio="none"
+      aria-hidden="true"
+    >
+      {Array.from({ length: cols + 1 }, (_, x) => (
+        <line
+          key={`vx-${x}`}
+          x1={x}
+          y1={0}
+          x2={x}
+          y2={rows}
+          stroke={x % 10 === 0 ? 'rgba(0,0,0,0.18)' : 'rgba(0,0,0,0.08)'}
+          strokeWidth={0.08}
+        />
+      ))}
+      {Array.from({ length: rows + 1 }, (_, y) => (
+        <line
+          key={`hy-${y}`}
+          x1={0}
+          y1={y}
+          x2={cols}
+          y2={y}
+          stroke={y % 10 === 0 ? 'rgba(0,0,0,0.18)' : 'rgba(0,0,0,0.08)'}
+          strokeWidth={0.08}
+        />
+      ))}
+
+      {xMarks.map((x) => (
+        <text
+          key={`xt-${x}`}
+          x={Math.min(x + 0.4, cols - 1)}
+          y={1.4}
+          fontSize={1}
+          fill="rgba(0,0,0,0.45)"
+        >
+          {x}
+        </text>
+      ))}
+      {yMarks.map((y) => (
+        <text
+          key={`yt-${y}`}
+          x={0.4}
+          y={Math.min(y + 1.2, rows - 0.2)}
+          fontSize={1}
+          fill="rgba(0,0,0,0.45)"
+        >
+          {y}
+        </text>
+      ))}
     </svg>
   );
 }
