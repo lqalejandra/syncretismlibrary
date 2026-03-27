@@ -87,14 +87,33 @@ export function DetailModal({
     }
   };
 
-  const handleCopyBinary = () => {
-    if (!preview) return;
-    if (preview.type === 'ascii') {
-      navigator.clipboard.writeText(preview.output);
-    } else {
-      navigator.clipboard.writeText(bitmapToBinaryString(preview.grid));
+  const handleCopyBinary = async () => {
+    if (!piece) return;
+    try {
+      // Always copy a true 0/1 grid, regardless of current display mode.
+      const binaryPreview = await getPreviewAsync({ ...piece, type: 'bitmap' });
+      if (binaryPreview.type !== 'bitmap') return;
+      await navigator.clipboard.writeText(
+        bitmapToBinaryString(binaryPreview.grid)
+      );
+      alert('Copied binary to clipboard');
+    } catch (err) {
+      console.error(err);
+      alert('Copy failed');
     }
-    alert('Copied to clipboard');
+  };
+
+  const handleCopyAscii = async () => {
+    if (!piece) return;
+    try {
+      const asciiPreview = await getPreviewAsync({ ...piece, type: 'ascii' });
+      if (asciiPreview.type !== 'ascii') return;
+      await navigator.clipboard.writeText(asciiPreview.output);
+      alert('Copied ASCII to clipboard');
+    } catch (err) {
+      console.error(err);
+      alert('Copy failed');
+    }
   };
 
   const handleDelete = () => {
@@ -196,6 +215,13 @@ export function DetailModal({
             className="border border-border px-4 py-2 text-sm text-text hover:bg-border"
           >
             Copy Binary
+          </button>
+          <button
+            type="button"
+            onClick={handleCopyAscii}
+            className="border border-border px-4 py-2 text-sm text-text hover:bg-border"
+          >
+            Copy ASCII
           </button>
           <button
             type="button"
