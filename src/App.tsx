@@ -6,6 +6,12 @@ import { TopBar } from './components/TopBar';
 import { Gallery } from './components/Gallery';
 import { CreationModal } from './components/CreationModal';
 import { DetailModal } from './components/DetailModal';
+import { WeaveModal } from './components/WeaveModal';
+import { AboutPage } from './components/AboutPage';
+
+function readAppViewFromHash(): 'library' | 'about' {
+  return window.location.hash === '#/about' ? 'about' : 'library';
+}
 
 function sortPieces(pieces: Piece[], sortBy: SortOption): Piece[] {
   const arr = [...pieces];
@@ -70,15 +76,32 @@ function getSearchSuggestions(
 }
 
 export default function App() {
+  const [appView, setAppView] = useState<'library' | 'about'>(() =>
+    readAppViewFromHash()
+  );
   const [pieces, setPieces] = useState<Piece[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
   const [mode, setMode] = useState<SortMode>('alphabetical');
   const [creationOpen, setCreationOpen] = useState(false);
+  const [weaveOpen, setWeaveOpen] = useState(false);
   const [detailPiece, setDetailPiece] = useState<Piece | null>(null);
   const [editPiece, setEditPiece] = useState<Piece | null>(null);
   const cardRefsMap = useRef<Record<string, HTMLElement | null>>({});
+
+  useEffect(() => {
+    const onHashChange = () => setAppView(readAppViewFromHash());
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  useEffect(() => {
+    document.title =
+      appView === 'about'
+        ? 'About — Syn·cre·tism Library'
+        : 'Syn·cre·tism Library';
+  }, [appView]);
 
   useEffect(() => {
     let cancelled = false;
@@ -96,6 +119,20 @@ export default function App() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  const goAbout = useCallback(() => {
+    if (window.location.hash !== '#/about') {
+      window.location.hash = '#/about';
+    } else {
+      setAppView('about');
+    }
+  }, []);
+
+  const goLibrary = useCallback(() => {
+    const { pathname, search } = window.location;
+    window.history.replaceState(null, '', pathname + search);
+    setAppView('library');
   }, []);
 
   const sortBy: SortOption = mode === 'date' ? 'date-desc' : 'title-az';
@@ -170,42 +207,49 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-bg font-sans text-text">
-      <Sidebar
-        pieces={pieces}
-        onLetterClick={scrollToLetter}
+      {appView === 'library' && (
+        <Sidebar pieces={pieces} onLetterClick={scrollToLetter} />
+      )}
+      <TopBar
+        appView={appView}
+        onGoLibrary={goLibrary}
+        onGoAbout={goAbout}
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        searchSuggestions={suggestions}
+        onSearchSelect={handleSearchSelect}
+        mode={mode}
+        onModeChange={setMode}
+        onWeaveClick={() => setWeaveOpen(true)}
+        onNewClick={() => {
+          setEditPiece(null);
+          setCreationOpen(true);
+        }}
+        searchFocused={searchFocused}
+        onSearchFocus={setSearchFocused}
       />
-      <div className="pl-10">
-        <TopBar
-          searchQuery={searchQuery}
-          onSearchChange={setSearchQuery}
-          searchSuggestions={suggestions}
-          onSearchSelect={handleSearchSelect}
-          mode={mode}
-          onModeChange={setMode}
-          onNewClick={() => {
-            setEditPiece(null);
-            setCreationOpen(true);
-          }}
-          searchFocused={searchFocused}
-          onSearchFocus={setSearchFocused}
-        />
 
-        <main className="p-6">
-          {loading ? (
-            <LoadingState />
-          ) : pieces.length === 0 ? (
-            <EmptyState onCreate={() => setCreationOpen(true)} />
-          ) : filtered.length === 0 ? (
-            <NoResultsState query={searchQuery} />
-          ) : (
-            <Gallery
-              pieces={filtered}
-              onPieceClick={setDetailPiece}
-              setCardRef={setCardRef}
-              sortBy={sortBy}
-            />
-          )}
-        </main>
+      <div className={appView === 'library' ? 'pl-10' : ''}>
+        {appView === 'about' ? (
+          <AboutPage onBackToLibrary={goLibrary} />
+        ) : (
+          <main className="p-6">
+            {loading ? (
+              <LoadingState />
+            ) : pieces.length === 0 ? (
+              <EmptyState onCreate={() => setCreationOpen(true)} />
+            ) : filtered.length === 0 ? (
+              <NoResultsState query={searchQuery} />
+            ) : (
+              <Gallery
+                pieces={filtered}
+                onPieceClick={setDetailPiece}
+                setCardRef={setCardRef}
+                sortBy={sortBy}
+              />
+            )}
+          </main>
+        )}
       </div>
 
       <CreationModal
@@ -224,6 +268,12 @@ export default function App() {
         onClose={() => setDetailPiece(null)}
         onEdit={handleEditFromDetail}
         onDelete={handleDeletePiece}
+      />
+
+      <WeaveModal
+        open={weaveOpen}
+        pieces={pieces}
+        onClose={() => setWeaveOpen(false)}
       />
     </div>
   );
