@@ -8,6 +8,7 @@ import { CreationModal } from './components/CreationModal';
 import { DetailModal } from './components/DetailModal';
 import { WeaveModal } from './components/WeaveModal';
 import { AboutPage } from './components/AboutPage';
+import { deleteImageByStorageKey } from './lib/storageApiClient';
 
 function readAppViewFromHash(): 'library' | 'about' {
   return window.location.hash === '#/about' ? 'about' : 'library';
@@ -193,11 +194,23 @@ export default function App() {
     [editPiece]
   );
 
-  const handleDeletePiece = useCallback(async (id: string) => {
-    const next = await deletePiece(id);
-    setPieces(next);
-    setDetailPiece(null);
-  }, []);
+  const handleDeletePiece = useCallback(
+    async (id: string) => {
+      const piece = pieces.find((item) => item.id === id);
+      if (piece?.inputImageStorageKey) {
+        try {
+          await deleteImageByStorageKey(piece.inputImageStorageKey);
+        } catch (error) {
+          console.error('Failed to remove S3 image before deleting record', error);
+        }
+      }
+
+      const next = await deletePiece(id);
+      setPieces(next);
+      setDetailPiece(null);
+    },
+    [pieces]
+  );
 
   const handleEditFromDetail = useCallback((piece: Piece) => {
     setDetailPiece(null);

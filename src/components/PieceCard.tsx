@@ -21,7 +21,20 @@ export function PieceCard({ piece, onClick, cardRef }: PieceCardProps) {
     return () => {
       cancelled = true;
     };
-  }, [piece.id, piece.inputImageDataURL, piece.inputText, piece.gridCols, piece.threshold, piece.invert, piece.type, piece.charSet, piece.customChars, syncPreview]);
+  }, [
+    piece.id,
+    piece.inputImageDataURL,
+    piece.inputImageStorageKey,
+    piece.inputImageURL,
+    piece.inputText,
+    piece.gridCols,
+    piece.threshold,
+    piece.invert,
+    piece.type,
+    piece.charSet,
+    piece.customChars,
+    syncPreview,
+  ]);
 
   const preview = syncPreview ?? asyncPreview;
   const dateStr = new Date(piece.dateAdded).toLocaleDateString('en-US', {

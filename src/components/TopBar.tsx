@@ -171,7 +171,7 @@ export function TopBar({
               rel="noreferrer"
               className="text-accent underline decoration-accent/50 underline-offset-2 hover:text-text"
             >
-              Research tool for Binary Threads design research.
+              Research tool for Spinning the Digital Thread design research.
             </a>
           </p>
         </div>

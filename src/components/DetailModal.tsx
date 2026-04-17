@@ -3,6 +3,7 @@ import type { Piece } from '../types';
 import { getPreviewAsync } from '../preview';
 import { bitmapToBinaryString } from '../conversion';
 import type { PreviewResult } from '../preview';
+import { resolvePieceImageSource } from '../lib/storageApiClient';
 
 interface DetailModalProps {
   piece: Piece | null;
@@ -189,6 +190,7 @@ export function DetailModal({
     day: 'numeric',
     year: 'numeric',
   });
+  const originalImageSource = resolvePieceImageSource(piece);
 
   return (
     <div
@@ -245,9 +247,9 @@ export function DetailModal({
                   <pre className="mt-1 whitespace-pre-wrap bg-bg p-2 font-mono text-text">
                     {piece.inputText || '(empty)'}
                   </pre>
-                ) : piece.inputImageDataURL ? (
+                ) : originalImageSource ? (
                   <img
-                    src={piece.inputImageDataURL}
+                    src={originalImageSource}
                     alt="Original"
                     className="mt-1 max-h-40 border border-border object-contain"
                   />

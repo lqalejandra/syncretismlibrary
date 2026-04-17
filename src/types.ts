@@ -8,6 +8,8 @@ export interface Piece {
   inputType: 'image' | 'text';
   inputText?: string;
   inputImageDataURL?: string;
+  inputImageStorageKey?: string;
+  inputImageURL?: string;
   gridCols: number;
   invert: boolean;
   threshold: number;

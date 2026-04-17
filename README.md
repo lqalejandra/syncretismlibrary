@@ -1,4 +1,4 @@
-# Syn·cre·tism Library    
+# Syn·cre·tism Library
 
 A single-page gallery for converting images or text into ASCII art or bitmap art, then storing them as browsable cards.
 
@@ -7,18 +7,32 @@ A single-page gallery for converting images or text into ASCII art or bitmap art
 - React + TypeScript
 - Vite
 - Tailwind CSS
-- localStorage for persistence
-- html2canvas for PNG export
-- Google Fonts (IBM Plex Mono, Fira Code, Space Mono, Inconsolata, Courier Prime)
+- Supabase (database persistence)
+- Amazon S3 (image object storage via presigned upload URLs)
+
+## Environment setup
+
+1) Copy `.env.example` to `.env` for client settings.  
+2) Copy `.env.server.example` to `.env.server` for server-only settings.
+
+Important: keep AWS credentials server-side only. Do not prefix AWS secret values with `VITE_`.
 
 ## Run locally
+
+Terminal 1 (storage API):
+
+```bash
+npm run storage-api
+```
+
+Terminal 2 (frontend):
 
 ```bash
 npm install
 npm run dev
 ```
 
-Then open http://localhost:5173 (or the URL Vite prints).
+Then open `http://localhost:5173` (or the URL Vite prints).
 
 ## Build
 
@@ -26,15 +40,40 @@ Then open http://localhost:5173 (or the URL Vite prints).
 npm run build
 ```
 
-Requires Node 20.19+ or 22.12+ for Vite 8. If build fails due to Node version, use an older Vite (e.g. `npm i -D vite@5`) or upgrade Node.
+## S3 upload flow
 
-## Features
+- Frontend requests a short-lived presigned URL from `POST /api/storage/upload-url`
+- Browser uploads the file directly to S3 via `PUT`
+- App stores `inputImageStorageKey` and optional `inputImageURL` in the piece payload
+- Existing legacy records with `inputImageDataURL` still render
+- Deletions call `POST /api/storage/delete` to remove S3 objects server-side
 
-- **Gallery**: Card grid with title, author, date, type badge (ASCII/BITMAP), and thumbnail preview
-- **Search**: Real-time search by title or author with dropdown suggestions (title match vs author tag)
-- **Sort**: Date Added (newest/oldest), Title A–Z / Z–A
-- **A–Z sidebar**: Click a letter to scroll to the first card whose title starts with that letter; letters with no cards are dimmed
-- **Create/Edit**: Modal with image or text input, metadata (title, description, author), ASCII vs Bitmap, grid size, invert, threshold; ASCII adds character set and font; live debounced preview
-- **Detail view**: Full art, description, original input; Save Image (PNG), Copy Binary (raw ASCII or 0/1 grid), Edit, Delete
+## One-time migration script
 
-All data is stored in `localStorage` under the key `syncretismlibrary-pieces`. Image inputs are stored as base64 data URLs; large images will prompt before saving.
+```bash
+npm run migrate:supabase-images-to-s3
+```
+
+This uploads migratable image sources to S3 and writes a mapping report to `s3-migration-map.json` (or `MIGRATION_OUTPUT_FILE`).
+
+To also write migrated keys/URLs back into Supabase payloads:
+
+```bash
+npm run migrate:supabase-images-to-s3 -- --apply-db-updates
+```
+
+## S3 checklist (beyond CORS)
+
+1) Keep Block Public Access enabled on the bucket.  
+2) Create an IAM policy for your storage API with scoped permissions:
+   - `s3:PutObject`
+   - `s3:DeleteObject`
+   - optional `s3:GetObject` if you fetch from S3 directly
+   - Resource: `arn:aws:s3:::<your-bucket>/<prefix>/*`
+3) If using direct S3 URLs in the app, set `AWS_S3_PUBLIC_BASE_URL`/`VITE_AWS_S3_PUBLIC_BASE_URL`.
+   If using CloudFront, set `AWS_CLOUDFRONT_URL`/`VITE_AWS_CLOUDFRONT_URL` instead.
+4) Set lifecycle rule(s) if desired (for old uploads cleanup).
+5) Verify uploads:
+   - frontend `POST /api/storage/upload-url` returns `200`
+   - browser `PUT` to signed URL returns `200`
+   - object appears in S3 under `AWS_S3_PREFIX`

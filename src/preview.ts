@@ -6,6 +6,7 @@ import {
   canvasToBitmap,
   getCharSetForPiece,
 } from './conversion';
+import { resolvePieceImageSource } from './lib/storageApiClient';
 
 export type PreviewResult =
   | { type: 'ascii'; output: string; cols: number; rows: number }
@@ -25,7 +26,7 @@ export function renderPreviewSync(piece: Piece): PreviewResult | null {
   const font = piece.font ?? 'IBM Plex Mono';
   const chars = getChars(piece);
 
-  if (piece.inputType === 'image' && piece.inputImageDataURL) {
+  if (piece.inputType === 'image' && resolvePieceImageSource(piece)) {
     return null;
   }
   const text = piece.inputText ?? '';
@@ -55,8 +56,9 @@ export async function getPreviewAsync(piece: Piece): Promise<PreviewResult> {
   const cols = Math.max(20, Math.min(200, piece.gridCols));
   const chars = getChars(piece);
 
-  if (piece.inputType === 'image' && piece.inputImageDataURL) {
-    const { canvas, ctx } = await imageToCanvas(piece.inputImageDataURL, cols);
+  const imageSource = resolvePieceImageSource(piece);
+  if (piece.inputType === 'image' && imageSource) {
+    const { canvas, ctx } = await imageToCanvas(imageSource, cols);
     if (piece.type === 'ascii') {
       const out = canvasToAscii(
         canvas,

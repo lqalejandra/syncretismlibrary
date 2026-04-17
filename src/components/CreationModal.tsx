@@ -10,6 +10,11 @@ import {
   getCharSetForPiece,
 } from '../conversion';
 import type { PreviewResult } from '../preview';
+import {
+  deleteImageByStorageKey,
+  resolvePieceImageSource,
+  uploadImageFile,
+} from '../lib/storageApiClient';
 
 export interface CreationFormState {
   title: string;
@@ -51,7 +56,7 @@ interface CreationModalProps {
   open: boolean;
   editPiece: Piece | null;
   onClose: () => void;
-  onSave: (piece: Piece) => void;
+  onSave: (piece: Piece) => Promise<void> | void;
 }
 
 export function CreationModal({
@@ -63,6 +68,9 @@ export function CreationModal({
   const [form, setForm] = useState<CreationFormState>(defaultFormState);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [selectedImageFile, setSelectedImageFile] = useState<File | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
 
@@ -75,7 +83,7 @@ export function CreationModal({
         author: editPiece.author ?? '',
         inputType: editPiece.inputType,
         inputText: editPiece.inputText ?? '',
-        inputImageDataURL: editPiece.inputImageDataURL ?? '',
+        inputImageDataURL: resolvePieceImageSource(editPiece) ?? '',
         type: editPiece.type,
         gridCols: editPiece.gridCols,
         invert: editPiece.invert,
@@ -91,6 +99,9 @@ export function CreationModal({
     }
     setPreview(null);
     setPreviewError(null);
+    setSaveError(null);
+    setSelectedImageFile(null);
+    setIsSaving(false);
   }, [open, editPiece]);
 
   const runPreview = useCallback(
@@ -155,8 +166,9 @@ export function CreationModal({
     };
   }, [open, form, runPreview]);
 
-  const handleSave = () => {
-    if (!form.title.trim()) return;
+  const handleSave = async () => {
+    if (!form.title.trim() || isSaving) return;
+
     const piece: Piece = {
       id: editPiece?.id ?? crypto.randomUUID(),
       title: form.title.trim(),
@@ -180,8 +192,9 @@ export function CreationModal({
       showPreviewGrid: form.showPreviewGrid,
       includeGridInSavedImage: form.includeGridInSavedImage,
     };
-    if (form.inputType === 'image' && form.inputImageDataURL) {
-      const size = Math.round((form.inputImageDataURL.length * 3) / 4 / 1024);
+
+    if (form.inputType === 'image' && selectedImageFile) {
+      const size = Math.round(selectedImageFile.size / 1024);
       if (size > 500) {
         if (
           !window.confirm(
@@ -192,13 +205,70 @@ export function CreationModal({
         }
       }
     }
-    onSave(piece);
-    onClose();
+
+    setSaveError(null);
+    setIsSaving(true);
+
+    try {
+      if (piece.inputType === 'image') {
+        if (selectedImageFile) {
+          const uploaded = await uploadImageFile(selectedImageFile);
+          piece.inputImageStorageKey = uploaded.key;
+          piece.inputImageURL = uploaded.publicUrl;
+          piece.inputImageDataURL = undefined;
+
+          const previousStorageKey = editPiece?.inputImageStorageKey;
+          if (previousStorageKey && previousStorageKey !== uploaded.key) {
+            try {
+              await deleteImageByStorageKey(previousStorageKey);
+            } catch (error) {
+              console.error('Failed to remove replaced S3 image', error);
+            }
+          }
+        } else if (!form.inputImageDataURL) {
+          if (editPiece?.inputImageStorageKey) {
+            try {
+              await deleteImageByStorageKey(editPiece.inputImageStorageKey);
+            } catch (error) {
+              console.error('Failed to remove deleted S3 image', error);
+            }
+          }
+          piece.inputImageDataURL = undefined;
+          piece.inputImageStorageKey = undefined;
+          piece.inputImageURL = undefined;
+        } else {
+          piece.inputImageDataURL = editPiece?.inputImageDataURL;
+          piece.inputImageStorageKey = editPiece?.inputImageStorageKey;
+          piece.inputImageURL = editPiece?.inputImageURL;
+        }
+      } else {
+        if (editPiece?.inputImageStorageKey) {
+          try {
+            await deleteImageByStorageKey(editPiece.inputImageStorageKey);
+          } catch (error) {
+            console.error('Failed to remove S3 image after switching input type', error);
+          }
+        }
+        piece.inputImageDataURL = undefined;
+        piece.inputImageStorageKey = undefined;
+        piece.inputImageURL = undefined;
+      }
+
+      await onSave(piece);
+      onClose();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSaveError(message || 'Save failed');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setSelectedImageFile(file);
+    setSaveError(null);
     const reader = new FileReader();
     reader.onload = () => {
       setForm((prev) => ({
@@ -215,6 +285,8 @@ export function CreationModal({
     e.preventDefault();
     const file = e.dataTransfer.files?.[0];
     if (!file || !/^image\/(png|jpeg|jpg|gif)$/i.test(file.type)) return;
+    setSelectedImageFile(file);
+    setSaveError(null);
     const reader = new FileReader();
     reader.onload = () => {
       setForm((prev) => ({
@@ -293,12 +365,13 @@ export function CreationModal({
                   />
                   <button
                     type="button"
-                    onClick={() =>
+                    onClick={() => {
+                      setSelectedImageFile(null);
                       setForm((prev) => ({
                         ...prev,
                         inputImageDataURL: '',
-                      }))
-                    }
+                      }));
+                    }}
                     className="text-sm text-accent hover:underline"
                   >
                     Remove
@@ -535,19 +608,21 @@ export function CreationModal({
             <button
               type="button"
               onClick={handleSave}
-              disabled={!form.title.trim()}
+              disabled={!form.title.trim() || isSaving}
               className="border border-accent bg-bg-card px-4 py-2 text-sm font-medium text-accent disabled:opacity-50 hover:bg-border"
             >
-              Save
+              {isSaving ? 'Saving…' : 'Save'}
             </button>
             <button
               type="button"
               onClick={onClose}
+              disabled={isSaving}
               className="border border-border px-4 py-2 text-sm text-text hover:bg-border"
             >
               Cancel
             </button>
           </div>
+          {saveError && <p className="text-sm text-red-400">{saveError}</p>}
         </div>
 
         {/* Right: preview */}

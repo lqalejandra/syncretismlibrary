@@ -27,7 +27,7 @@ export function AboutPage({ onBackToLibrary }: AboutPageProps) {
           rel="noreferrer"
           className="text-accent underline decoration-accent/50 underline-offset-2 hover:text-text"
         >
-          research tool for Binary Threads
+          research tool for Spinning the Digital Thread
         </a>
         — a design-research project on textiles, translation, and code.
       </p>
@@ -81,7 +81,7 @@ export function AboutPage({ onBackToLibrary }: AboutPageProps) {
           Built with React, Vite, Tailwind, Supabase,{' '}
           <code className="text-xs">adacad-drafting-lib</code> (weave drafting),
           and Geist. Weave drafting references the broader lineage from textile
-          pattern to programmable logic described in the Binary Threads research.
+          pattern to programmable logic described in the Digital Thread research.
         </p>
       </section>
     </main>
