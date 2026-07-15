@@ -18,6 +18,10 @@ const storageApiKey = import.meta.env.VITE_STORAGE_API_KEY;
 const cloudfrontBase = import.meta.env.VITE_AWS_CLOUDFRONT_URL?.replace(/\/$/, '');
 const s3PublicBase = import.meta.env.VITE_AWS_S3_PUBLIC_BASE_URL?.replace(/\/$/, '');
 
+export function isStorageApiConfigured(): boolean {
+  return Boolean(storageApiBase);
+}
+
 function getPublicBaseUrl(): string | undefined {
   return cloudfrontBase ?? s3PublicBase;
 }

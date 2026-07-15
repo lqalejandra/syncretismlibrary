@@ -12,6 +12,7 @@ import {
 import type { PreviewResult } from '../preview';
 import {
   deleteImageByStorageKey,
+  isStorageApiConfigured,
   resolvePieceImageSource,
   uploadImageFile,
 } from '../lib/storageApiClient';
@@ -212,18 +213,35 @@ export function CreationModal({
     try {
       if (piece.inputType === 'image') {
         if (selectedImageFile) {
-          const uploaded = await uploadImageFile(selectedImageFile);
-          piece.inputImageStorageKey = uploaded.key;
-          piece.inputImageURL = uploaded.publicUrl;
-          piece.inputImageDataURL = undefined;
-
-          const previousStorageKey = editPiece?.inputImageStorageKey;
-          if (previousStorageKey && previousStorageKey !== uploaded.key) {
+          if (isStorageApiConfigured()) {
             try {
-              await deleteImageByStorageKey(previousStorageKey);
+              const uploaded = await uploadImageFile(selectedImageFile);
+              piece.inputImageStorageKey = uploaded.key;
+              piece.inputImageURL = uploaded.publicUrl;
+              piece.inputImageDataURL = undefined;
+
+              const previousStorageKey = editPiece?.inputImageStorageKey;
+              if (previousStorageKey && previousStorageKey !== uploaded.key) {
+                try {
+                  await deleteImageByStorageKey(previousStorageKey);
+                } catch (error) {
+                  console.error('Failed to remove replaced S3 image', error);
+                }
+              }
             } catch (error) {
-              console.error('Failed to remove replaced S3 image', error);
+              console.warn(
+                'Storage API upload failed, falling back to embedded image data URL.',
+                error
+              );
+              piece.inputImageStorageKey = undefined;
+              piece.inputImageURL = undefined;
+              piece.inputImageDataURL = form.inputImageDataURL;
             }
+          } else {
+            // Fallback for local/dev setups without storage API.
+            piece.inputImageStorageKey = undefined;
+            piece.inputImageURL = undefined;
+            piece.inputImageDataURL = form.inputImageDataURL;
           }
         } else if (!form.inputImageDataURL) {
           if (editPiece?.inputImageStorageKey) {
