@@ -3,8 +3,11 @@ export interface Piece {
   title: string;
   description?: string;
   author?: string;
+  pieceKind?: 'weave' | 'pattern';
+  weaveWarps?: number;
+  weaveWefts?: number;
   dateAdded: string;
-  type: 'ascii' | 'bitmap';
+  type: 'ascii' | 'bitmap' | 'binary';
   inputType: 'image' | 'text';
   inputText?: string;
   inputImageDataURL?: string;
@@ -13,6 +16,8 @@ export interface Piece {
   gridCols: number;
   invert: boolean;
   threshold: number;
+  binaryRepeats?: number;
+  binaryValues?: string;
   charSet?: string;
   customChars?: string;
   font?: string;
@@ -22,7 +27,13 @@ export interface Piece {
 
 export type SortOption = 'date-desc' | 'date-asc' | 'title-az' | 'title-za';
 
-export type SortMode = 'alphabetical' | 'date' | 'bitmap' | 'ascii';
+export type SortMode =
+  | 'alphabetical'
+  | 'date'
+  | 'bitmap'
+  | 'ascii'
+  | 'binary'
+  | 'pattern';
 
 export const CHAR_SETS: Record<string, string> = {
   Standard: '@#S%?*+;:,.',

@@ -4,12 +4,18 @@ import {
   textToCanvas,
   canvasToAscii,
   canvasToBitmap,
+  canvasToBinaryPattern,
+  textToBinaryGrid,
+  binaryValuesToGrid,
+  invertBinaryGrid,
+  repeatBinaryGrid,
   getCharSetForPiece,
 } from './conversion';
 import { resolvePieceImageSource } from './lib/storageApiClient';
 
 export type PreviewResult =
   | { type: 'ascii'; output: string; cols: number; rows: number }
+  | { type: 'binary'; grid: number[][]; cols: number; rows: number }
   | { type: 'bitmap'; grid: number[][]; cols: number; rows: number };
 
 function getChars(piece: Piece): string {
@@ -42,6 +48,30 @@ export function renderPreviewSync(piece: Piece): PreviewResult | null {
     );
     return { type: 'ascii', output, cols: c, rows: r };
   }
+  if (piece.type === 'binary') {
+    let baseGrid: number[][];
+    if (piece.inputType === 'text') {
+      const out = piece.binaryValues?.trim()
+        ? binaryValuesToGrid(piece.binaryValues)
+        : textToBinaryGrid(piece.inputText ?? ' ');
+      baseGrid = piece.invert ? invertBinaryGrid(out.grid) : out.grid;
+    } else {
+      const out = canvasToBinaryPattern(
+        canvas,
+        ctx,
+        piece.threshold,
+        piece.invert
+      );
+      baseGrid = out.grid;
+    }
+    const repeated = repeatBinaryGrid(baseGrid, piece.binaryRepeats ?? 1);
+    return {
+      type: 'binary',
+      grid: repeated,
+      cols: repeated[0]?.length ?? 0,
+      rows: repeated.length,
+    };
+  }
   const { grid, cols: c, rows: r } = canvasToBitmap(
     canvas,
     ctx,
@@ -69,6 +99,21 @@ export async function getPreviewAsync(piece: Piece): Promise<PreviewResult> {
       );
       return { type: 'ascii', ...out };
     }
+    if (piece.type === 'binary') {
+      const out = canvasToBinaryPattern(
+        canvas,
+        ctx,
+        piece.threshold,
+        piece.invert
+      );
+      const repeated = repeatBinaryGrid(out.grid, piece.binaryRepeats ?? 1);
+      return {
+        type: 'binary',
+        grid: repeated,
+        cols: repeated[0]?.length ?? 0,
+        rows: repeated.length,
+      };
+    }
     const out = canvasToBitmap(
       canvas,
       ctx,
@@ -87,5 +132,7 @@ export function renderPreview(piece: Piece): PreviewResult {
   if (sync) return sync;
   return piece.type === 'ascii'
     ? { type: 'ascii', output: '…', cols: 0, rows: 0 }
-    : { type: 'bitmap', grid: [], cols: 0, rows: 0 };
+    : piece.type === 'binary'
+      ? { type: 'binary', grid: [], cols: 0, rows: 0 }
+      : { type: 'bitmap', grid: [], cols: 0, rows: 0 };
 }

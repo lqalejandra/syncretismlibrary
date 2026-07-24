@@ -1,4 +1,11 @@
-import { useState, useEffect, useMemo, useRef, type ReactNode } from 'react';
+import {
+  useState,
+  useEffect,
+  useMemo,
+  useRef,
+  type ReactNode,
+  type WheelEvent,
+} from 'react';
 import {
   direct_utils,
   computeDrawdown,
@@ -23,6 +30,9 @@ import { getPreviewAsync } from '../preview';
 interface WeaveModalProps {
   open: boolean;
   pieces: Piece[];
+  onSaveToLibrary: (piece: Piece) => Promise<void> | void;
+  initialSelectedId?: string | null;
+  editPieceId?: string | null;
   onClose: () => void;
 }
 
@@ -188,6 +198,61 @@ function ClassicDraftView({
   loom: Loom;
   drawdown: Drawdown;
 }) {
+  const [zoom, setZoom] = useState(1);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{
+    dragging: boolean;
+    startX: number;
+    startY: number;
+    scrollLeft: number;
+    scrollTop: number;
+  }>({
+    dragging: false,
+    startX: 0,
+    startY: 0,
+    scrollLeft: 0,
+    scrollTop: 0,
+  });
+
+  const zoomOut = () => setZoom((z) => Math.max(0.5, Number((z - 0.1).toFixed(2))));
+  const zoomIn = () => setZoom((z) => Math.min(4, Number((z + 0.1).toFixed(2))));
+  const resetView = () => {
+    setZoom(1);
+    const el = scrollRef.current;
+    if (el) {
+      el.scrollLeft = 0;
+      el.scrollTop = 0;
+    }
+  };
+
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    dragRef.current = {
+      dragging: true,
+      startX: e.clientX,
+      startY: e.clientY,
+      scrollLeft: el.scrollLeft,
+      scrollTop: el.scrollTop,
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const el = scrollRef.current;
+    const drag = dragRef.current;
+    if (!el || !drag.dragging) return;
+    const dx = e.clientX - drag.startX;
+    const dy = e.clientY - drag.startY;
+    el.scrollLeft = drag.scrollLeft - dx;
+    el.scrollTop = drag.scrollTop - dy;
+  };
+
+  const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    dragRef.current.dragging = false;
+    e.currentTarget.releasePointerCapture(e.pointerId);
+  };
+
   const nWarps = loom.threading.length;
   const nWefts = loom.treadling.length;
   const nShafts = loom.tieup.length;
@@ -234,16 +299,58 @@ function ClassicDraftView({
 
   return (
     <div>
-      <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">
-        Draft (threading · tie-up · drawdown · treadling)
-      </h3>
+      <div className="mb-2">
+        <h3 className="text-xs font-medium uppercase tracking-wide text-muted">
+          Draft (threading · tie-up · drawdown · treadling)
+        </h3>
+      </div>
       <p className="mb-3 text-xs text-muted leading-relaxed">
         Same layout as standard drafting software: threading above the fabric,
         tie-up upper-right, treadling beside picks. Shaft 1 is the bottom row
         of the threading grid; top pick is row 0.
       </p>
-      <div className="max-h-[min(78vh,720px)] overflow-auto rounded border border-border bg-[#f7f5f0] p-2">
-        <div className="inline-flex flex-col gap-px">
+      <div className="mb-2 flex items-center justify-between gap-3 text-[11px] text-muted">
+        <span>Drag to pan, use +/- to zoom.</span>
+        <div className="flex items-center gap-2 text-xs">
+          <button
+            type="button"
+            onClick={zoomOut}
+            className="border border-border px-2 py-1 text-text hover:bg-border"
+          >
+            -
+          </button>
+          <span className="min-w-12 text-center text-muted">
+            {Math.round(zoom * 100)}%
+          </span>
+          <button
+            type="button"
+            onClick={zoomIn}
+            className="border border-border px-2 py-1 text-text hover:bg-border"
+          >
+            +
+          </button>
+          <button
+            type="button"
+            onClick={resetView}
+            className="border border-border px-2 py-1 text-text hover:bg-border"
+          >
+            Reset
+          </button>
+        </div>
+      </div>
+      <div
+        ref={scrollRef}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        className="max-h-[min(78vh,720px)] overflow-auto rounded border border-border bg-[#f7f5f0] p-2 cursor-grab active:cursor-grabbing"
+      >
+        <div
+          className="inline-block origin-top-left"
+          style={{ transform: `scale(${zoom})` }}
+        >
+          <div className="inline-flex flex-col gap-px">
           <div className="inline-flex flex-row gap-px">
             <svg
               width={tw}
@@ -353,6 +460,7 @@ function ClassicDraftView({
             </svg>
           </div>
         </div>
+        </div>
       </div>
       <p className="mt-2 text-[11px] text-muted">
         {nWarps} warps × {nWefts} wefts · {nShafts} shafts · {nTreadles}{' '}
@@ -362,7 +470,75 @@ function ClassicDraftView({
   );
 }
 
-export function WeaveModal({ open, pieces, onClose }: WeaveModalProps) {
+function drawdownToDataUrl(drawdown: Drawdown): string {
+  const cols = Math.max(1, warps(drawdown));
+  const rows = Math.max(1, wefts(drawdown));
+  const cell = Math.max(8, Math.floor(900 / Math.max(cols, rows)));
+  const leftPad = 30;
+  const topPad = 24;
+  const bottomPad = 8;
+  const rightPad = 8;
+  const gridW = cols * cell;
+  const gridH = rows * cell;
+  const canvas = document.createElement('canvas');
+  canvas.width = leftPad + gridW + rightPad;
+  canvas.height = topPad + gridH + bottomPad;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return '';
+  ctx.fillStyle = '#faf8f4';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  for (let i = 0; i < rows; i++) {
+    for (let j = 0; j < cols; j++) {
+      if (isUp(drawdown, i, j)) {
+        ctx.fillStyle = '#1a1a1a';
+        ctx.fillRect(leftPad + j * cell, topPad + i * cell, cell, cell);
+      }
+    }
+  }
+
+  // Grid overlay with 5-cell cadence labels.
+  for (let x = 0; x <= cols; x++) {
+    const major = x % 5 === 0;
+    ctx.strokeStyle = major ? 'rgba(0,0,0,0.24)' : 'rgba(0,0,0,0.10)';
+    ctx.lineWidth = major ? 1.2 : 1;
+    ctx.beginPath();
+    ctx.moveTo(leftPad + x * cell + 0.5, topPad);
+    ctx.lineTo(leftPad + x * cell + 0.5, topPad + gridH);
+    ctx.stroke();
+  }
+  for (let y = 0; y <= rows; y++) {
+    const major = y % 5 === 0;
+    ctx.strokeStyle = major ? 'rgba(0,0,0,0.24)' : 'rgba(0,0,0,0.10)';
+    ctx.lineWidth = major ? 1.2 : 1;
+    ctx.beginPath();
+    ctx.moveTo(leftPad, topPad + y * cell + 0.5);
+    ctx.lineTo(leftPad + gridW, topPad + y * cell + 0.5);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = 'rgba(0,0,0,0.62)';
+  ctx.font = `${Math.max(10, Math.floor(cell * 0.55))}px "IBM Plex Mono", monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (let x = 5; x <= cols; x += 5) {
+    ctx.fillText(String(x), leftPad + x * cell, Math.max(8, topPad / 2));
+  }
+  ctx.textAlign = 'right';
+  for (let y = 5; y <= rows; y += 5) {
+    ctx.fillText(String(y), leftPad - 6, topPad + y * cell);
+  }
+
+  return canvas.toDataURL('image/png');
+}
+
+export function WeaveModal({
+  open,
+  pieces,
+  onSaveToLibrary,
+  initialSelectedId,
+  editPieceId,
+  onClose,
+}: WeaveModalProps) {
   const [selectedId, setSelectedId] = useState<string>('');
   const [maxShafts, setMaxShafts] = useState(DEFAULT_MAX_SHAFTS);
   const [epi, setEpi] = useState(12);
@@ -393,8 +569,18 @@ export function WeaveModal({ open, pieces, onClose }: WeaveModalProps) {
   /** wefts / warps while “lock ratio” is on */
   const draftAspectRatioRef = useRef(1);
   const [lockDraftRatio, setLockDraftRatio] = useState(false);
+  const [saveLoading, setSaveLoading] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
+
+  const preventScrollIncrement = (e: WheelEvent<HTMLInputElement>) => {
+    e.currentTarget.blur();
+  };
 
   const selectedPiece = pieces.find((p) => p.id === selectedId) ?? null;
+  const editingPiece = editPieceId
+    ? pieces.find((p) => p.id === editPieceId) ?? null
+    : null;
 
   const onDraftWarpsInput = (raw: number) => {
     if (lockDraftRatio) {
@@ -453,6 +639,15 @@ export function WeaveModal({ open, pieces, onClose }: WeaveModalProps) {
       setSelectedId(pieces[0].id);
     }
   }, [open, pieces, selectedId]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (!initialSelectedId) return;
+    const exists = pieces.some((p) => p.id === initialSelectedId);
+    if (exists) {
+      setSelectedId(initialSelectedId);
+    }
+  }, [open, initialSelectedId, pieces]);
 
   useEffect(() => {
     if (!loom) {
@@ -612,17 +807,56 @@ export function WeaveModal({ open, pieces, onClose }: WeaveModalProps) {
     void navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
   };
 
+  const handleSaveToLibrary = async () => {
+    if (!selectedPiece || !drawdown || saveLoading) return;
+    setSaveError(null);
+    setSaveSuccess(null);
+    setSaveLoading(true);
+    try {
+      const cols = warps(drawdown);
+      const rows = wefts(drawdown);
+      const dataUrl = drawdownToDataUrl(drawdown);
+      if (!dataUrl) {
+        throw new Error('Could not serialize draft image for saving.');
+      }
+      const nextPiece: Piece = {
+        id: editingPiece?.id ?? crypto.randomUUID(),
+        title: editingPiece?.title ?? selectedPiece.title,
+        description: `Weave draft generated from "${selectedPiece.title}" (${cols} warps × ${rows} wefts).`,
+        author: editingPiece?.author ?? selectedPiece.author,
+        pieceKind: 'weave',
+        weaveWarps: cols,
+        weaveWefts: rows,
+        dateAdded: editingPiece?.dateAdded ?? new Date().toISOString(),
+        type: 'bitmap',
+        inputType: 'image',
+        inputImageDataURL: dataUrl,
+        gridCols: cols,
+        invert: false,
+        threshold: 128,
+        showPreviewGrid: true,
+        includeGridInSavedImage: false,
+      };
+      await onSaveToLibrary(nextPiece);
+      setSaveSuccess('Saved to library.');
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaveLoading(false);
+    }
+  };
+
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 font-sans"
+      className="fixed inset-0 z-50 flex items-stretch justify-center bg-black/30 font-sans"
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
-        className="flex max-h-[90vh] w-full max-w-6xl flex-col overflow-hidden border border-border bg-bg-card shadow-xl lg:flex-row"
+        className="flex h-full w-full flex-col overflow-hidden border border-border bg-bg-card shadow-xl lg:flex-row"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex w-full flex-col gap-4 overflow-y-auto border-b border-border p-6 lg:w-[380px] lg:border-b-0 lg:border-r">
-          <h2 className="text-lg font-normal text-text">Weave (hand loom)</h2>
+        <div className="flex w-full shrink-0 flex-col gap-4 overflow-y-auto border-b border-border p-5 lg:w-[320px] lg:border-b-0 lg:border-r">
+          <h2 className="text-lg font-normal text-text">Weave</h2>
           <p className="text-xs text-muted leading-relaxed">
             For <strong className="text-text">hand weaving</strong> on a shaft
             loom: this turns your piece’s <strong className="text-text">binary</strong>{' '}
@@ -665,6 +899,37 @@ export function WeaveModal({ open, pieces, onClose }: WeaveModalProps) {
             </select>
           </div>
 
+          <button
+            type="button"
+            onClick={copyLoomJson}
+            disabled={!loom || !drawdown || loading}
+            className="border border-border bg-bg-card px-4 py-2 text-sm text-text disabled:opacity-50 hover:bg-border"
+          >
+            Copy loom JSON
+          </button>
+
+          <button
+            type="button"
+            onClick={handleSaveToLibrary}
+            disabled={!loom || !drawdown || loading || saveLoading}
+            className="border border-accent bg-bg-card px-4 py-2 text-sm font-medium text-accent disabled:opacity-50 hover:bg-border"
+          >
+            {saveLoading ? 'Saving…' : editingPiece ? 'Update weave' : 'Save to library'}
+          </button>
+          {saveError && <p className="text-xs text-red-400">{saveError}</p>}
+          {saveSuccess && <p className="text-xs text-emerald-500">{saveSuccess}</p>}
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="mt-auto border border-border px-4 py-2 text-sm text-text hover:bg-border"
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="flex w-full shrink-0 flex-col gap-4 overflow-y-auto border-b border-border p-5 lg:w-[320px] lg:border-b-0 lg:border-r">
+          <h3 className="text-sm font-medium text-text">Edit</h3>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="mb-1 block text-sm text-muted">
@@ -675,10 +940,9 @@ export function WeaveModal({ open, pieces, onClose }: WeaveModalProps) {
                 min={DRAFT_DIM_MIN}
                 max={DRAFT_DIM_MAX}
                 value={draftWarps}
-                onChange={(e) =>
-                  onDraftWarpsInput(Number(e.target.value))
-                }
+                onChange={(e) => onDraftWarpsInput(Number(e.target.value))}
                 disabled={!selectedPiece || loading}
+                onWheel={preventScrollIncrement}
                 className="w-full border border-border bg-bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none disabled:opacity-50"
               />
             </div>
@@ -691,10 +955,9 @@ export function WeaveModal({ open, pieces, onClose }: WeaveModalProps) {
                 min={DRAFT_DIM_MIN}
                 max={DRAFT_DIM_MAX}
                 value={draftWefts}
-                onChange={(e) =>
-                  onDraftWeftsInput(Number(e.target.value))
-                }
+                onChange={(e) => onDraftWeftsInput(Number(e.target.value))}
                 disabled={!selectedPiece || loading}
+                onWheel={preventScrollIncrement}
                 className="w-full border border-border bg-bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none disabled:opacity-50"
               />
             </div>
@@ -719,8 +982,7 @@ export function WeaveModal({ open, pieces, onClose }: WeaveModalProps) {
           </label>
           {lockDraftRatio && draftWarps >= 1 && (
             <p className="text-[11px] text-muted">
-              Ratio (wefts ÷ warps):{' '}
-              {(draftWefts / draftWarps).toFixed(4)}
+              Ratio (wefts ÷ warps): {(draftWefts / draftWarps).toFixed(4)}
             </p>
           )}
           {sourceDims && (
@@ -745,7 +1007,6 @@ export function WeaveModal({ open, pieces, onClose }: WeaveModalProps) {
               </button>
             </p>
           )}
-
           <div>
             <label className="mb-1 block text-sm text-muted">
               Max shafts / treadles (direct tie-up): {maxShafts}
@@ -763,7 +1024,6 @@ export function WeaveModal({ open, pieces, onClose }: WeaveModalProps) {
               many frames and treadles.
             </p>
           </div>
-
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="mb-1 block text-sm text-muted">EPI</label>
@@ -773,6 +1033,7 @@ export function WeaveModal({ open, pieces, onClose }: WeaveModalProps) {
                 step={0.1}
                 value={epi}
                 onChange={(e) => setEpi(Number(e.target.value) || 1)}
+                onWheel={preventScrollIncrement}
                 className="w-full border border-border bg-bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none"
               />
             </div>
@@ -784,6 +1045,7 @@ export function WeaveModal({ open, pieces, onClose }: WeaveModalProps) {
                 step={0.1}
                 value={ppi}
                 onChange={(e) => setPpi(Number(e.target.value) || 1)}
+                onWheel={preventScrollIncrement}
                 className="w-full border border-border bg-bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none"
               />
             </div>
@@ -792,20 +1054,13 @@ export function WeaveModal({ open, pieces, onClose }: WeaveModalProps) {
             <label className="mb-1 block text-sm text-muted">Units (for size)</label>
             <select
               value={units}
-              onChange={(e) =>
-                setUnits(e.target.value as LoomSettings['units'])
-              }
+              onChange={(e) => setUnits(e.target.value as LoomSettings['units'])}
               className="w-full border border-border bg-bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none"
             >
               <option value="in">inches</option>
               <option value="cm">cm</option>
             </select>
-            <p className="mt-1 text-xs text-muted">
-              Used for dressing notes and width/length estimates from the
-              drawdown; does not change threading or treadling.
-            </p>
           </div>
-
           <button
             type="button"
             onClick={() => setRecomputeTick((n) => n + 1)}
@@ -814,26 +1069,9 @@ export function WeaveModal({ open, pieces, onClose }: WeaveModalProps) {
           >
             Regenerate loom
           </button>
-
-          <button
-            type="button"
-            onClick={copyLoomJson}
-            disabled={!loom || !drawdown || loading}
-            className="border border-border bg-bg-card px-4 py-2 text-sm text-text disabled:opacity-50 hover:bg-border"
-          >
-            Copy loom JSON
-          </button>
-
-          <button
-            type="button"
-            onClick={onClose}
-            className="border border-border px-4 py-2 text-sm text-text hover:bg-border"
-          >
-            Close
-          </button>
         </div>
 
-        <div className="flex flex-1 flex-col overflow-hidden border-t border-border lg:border-t-0 lg:border-l-0">
+        <div className="flex flex-1 flex-col overflow-hidden">
           <div className="border-b border-border px-4 py-2 text-sm text-muted">
             Classic draft layout
             {dims &&

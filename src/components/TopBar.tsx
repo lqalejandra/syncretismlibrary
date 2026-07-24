@@ -119,7 +119,7 @@ export function TopBar({
                 Sort
               </p>
               <div className="flex flex-wrap gap-2">
-                {(['alphabetical', 'date', 'bitmap', 'ascii'] as SortMode[]).map(
+                {(['alphabetical', 'date', 'bitmap', 'ascii', 'binary', 'pattern'] as SortMode[]).map(
                   (m) => (
                     <button
                       key={m}
@@ -136,6 +136,8 @@ export function TopBar({
                       {m === 'date' && 'Newest'}
                       {m === 'bitmap' && 'Bitmap'}
                       {m === 'ascii' && 'ASCII'}
+                      {m === 'binary' && 'Binary'}
+                      {m === 'pattern' && 'Pattern'}
                     </button>
                   )
                 )}
@@ -242,7 +244,7 @@ export function TopBar({
                 Sort
               </span>
               <div className="flex gap-1">
-                {(['alphabetical', 'date', 'bitmap', 'ascii'] as SortMode[]).map(
+                {(['alphabetical', 'date', 'bitmap', 'ascii', 'binary', 'pattern'] as SortMode[]).map(
                   (m) => (
                     <button
                       key={m}
@@ -259,6 +261,8 @@ export function TopBar({
                       {m === 'date' && 'Newest'}
                       {m === 'bitmap' && 'Bitmap'}
                       {m === 'ascii' && 'ASCII'}
+                      {m === 'binary' && 'Binary'}
+                      {m === 'pattern' && 'Pattern'}
                     </button>
                   )
                 )}

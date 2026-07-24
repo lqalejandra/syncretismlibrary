@@ -76,6 +76,20 @@ function getSearchSuggestions(
   return out;
 }
 
+function isWeavePiece(piece: Piece): boolean {
+  if (piece.pieceKind === 'weave') return true;
+  if (piece.pieceKind === 'pattern') return false;
+  return piece.title.toLowerCase().includes('weave');
+}
+
+function isPatternPiece(piece: Piece): boolean {
+  if (piece.type === 'binary') return true;
+  if (piece.pieceKind === 'pattern') return true;
+  if (piece.pieceKind === 'weave') return true;
+  const title = piece.title.toLowerCase();
+  return title.includes('pattern') || title.includes('weave');
+}
+
 export default function App() {
   const [appView, setAppView] = useState<'library' | 'about'>(() =>
     readAppViewFromHash()
@@ -87,6 +101,8 @@ export default function App() {
   const [mode, setMode] = useState<SortMode>('alphabetical');
   const [creationOpen, setCreationOpen] = useState(false);
   const [weaveOpen, setWeaveOpen] = useState(false);
+  const [weaveInitialSelectedId, setWeaveInitialSelectedId] = useState<string | null>(null);
+  const [weaveEditPieceId, setWeaveEditPieceId] = useState<string | null>(null);
   const [detailPiece, setDetailPiece] = useState<Piece | null>(null);
   const [editPiece, setEditPiece] = useState<Piece | null>(null);
   const cardRefsMap = useRef<Record<string, HTMLElement | null>>({});
@@ -141,6 +157,8 @@ export default function App() {
   const filteredByMode = pieces.filter((p) => {
     if (mode === 'bitmap') return p.type === 'bitmap';
     if (mode === 'ascii') return p.type === 'ascii';
+    if (mode === 'binary') return p.type === 'binary';
+    if (mode === 'pattern') return isPatternPiece(p);
     return true;
   });
 
@@ -194,6 +212,12 @@ export default function App() {
     [editPiece]
   );
 
+  const handleSaveWeavePiece = useCallback(async (piece: Piece) => {
+    const exists = pieces.some((p) => p.id === piece.id);
+    const next = exists ? await updatePiece(piece.id, piece) : await addPiece(piece);
+    setPieces(next);
+  }, [pieces]);
+
   const handleDeletePiece = useCallback(
     async (id: string) => {
       const piece = pieces.find((item) => item.id === id);
@@ -214,6 +238,12 @@ export default function App() {
 
   const handleEditFromDetail = useCallback((piece: Piece) => {
     setDetailPiece(null);
+    if (isWeavePiece(piece)) {
+      setWeaveInitialSelectedId(piece.id);
+      setWeaveEditPieceId(piece.id);
+      setWeaveOpen(true);
+      return;
+    }
     setEditPiece(piece);
     setCreationOpen(true);
   }, []);
@@ -233,7 +263,11 @@ export default function App() {
         onSearchSelect={handleSearchSelect}
         mode={mode}
         onModeChange={setMode}
-        onWeaveClick={() => setWeaveOpen(true)}
+        onWeaveClick={() => {
+          setWeaveInitialSelectedId(null);
+          setWeaveEditPieceId(null);
+          setWeaveOpen(true);
+        }}
         onNewClick={() => {
           setEditPiece(null);
           setCreationOpen(true);
@@ -286,7 +320,14 @@ export default function App() {
       <WeaveModal
         open={weaveOpen}
         pieces={pieces}
-        onClose={() => setWeaveOpen(false)}
+        onSaveToLibrary={handleSaveWeavePiece}
+        initialSelectedId={weaveInitialSelectedId}
+        editPieceId={weaveEditPieceId}
+        onClose={() => {
+          setWeaveOpen(false);
+          setWeaveInitialSelectedId(null);
+          setWeaveEditPieceId(null);
+        }}
       />
     </div>
   );

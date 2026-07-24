@@ -13,6 +13,52 @@ interface DetailModalProps {
   onDelete: (id: string) => void;
 }
 
+function getPieceChipLabel(piece: Piece): string {
+  if (piece.pieceKind === 'weave') return 'PATTERN';
+  if (piece.pieceKind === 'pattern') return 'PATTERN';
+  if (piece.type === 'binary') return 'PATTERN';
+  const title = piece.title.toLowerCase();
+  if (title.includes('pattern')) return 'PATTERN';
+  if (title.includes('weave')) return 'PATTERN';
+  return piece.type === 'ascii' ? 'ASCII' : 'BITMAP';
+}
+
+function isWeavePiece(piece: Piece): boolean {
+  if (piece.pieceKind === 'weave') return true;
+  if (piece.pieceKind === 'pattern') return false;
+  return piece.title.toLowerCase().includes('weave');
+}
+
+function getSavedWeaveVerticalGeometry(cols: number, rows: number): {
+  topOffsetRatio: number;
+  rowHeightRatio: number;
+} {
+  const topPad = 24;
+  const bottomPad = 8;
+  const cell = Math.max(8, Math.floor(900 / Math.max(cols, rows)));
+  const canvasHeight = topPad + rows * cell + bottomPad;
+  return {
+    topOffsetRatio: topPad / canvasHeight,
+    rowHeightRatio: cell / canvasHeight,
+  };
+}
+
+function getWeaveDimensions(piece: Piece): { warps: number; wefts: number } | null {
+  if (piece.weaveWarps && piece.weaveWefts) {
+    return {
+      warps: Math.max(1, Math.floor(piece.weaveWarps)),
+      wefts: Math.max(1, Math.floor(piece.weaveWefts)),
+    };
+  }
+  const desc = piece.description ?? '';
+  const match = desc.match(/(\d+)\s*warps\s*[×x]\s*(\d+)\s*wefts/i);
+  if (!match) return null;
+  const warps = Number(match[1]);
+  const wefts = Number(match[2]);
+  if (!Number.isFinite(warps) || !Number.isFinite(wefts)) return null;
+  return { warps: Math.max(1, Math.floor(warps)), wefts: Math.max(1, Math.floor(wefts)) };
+}
+
 export function DetailModal({
   piece,
   open,
@@ -21,7 +67,16 @@ export function DetailModal({
   onDelete,
 }: DetailModalProps) {
   const [preview, setPreview] = useState<PreviewResult | null>(null);
-  const artRef = useRef<HTMLDivElement>(null);
+  const [bitmapZoom, setBitmapZoom] = useState(1);
+  const [activeWeaveRowFromBottom, setActiveWeaveRowFromBottom] = useState(1);
+  const bitmapScrollRef = useRef<HTMLDivElement>(null);
+  const bitmapDragRef = useRef({
+    dragging: false,
+    startX: 0,
+    startY: 0,
+    scrollLeft: 0,
+    scrollTop: 0,
+  });
 
   useEffect(() => {
     if (!open || !piece) {
@@ -36,6 +91,26 @@ export function DetailModal({
       cancelled = true;
     };
   }, [open, piece?.id]);
+
+  useEffect(() => {
+    setBitmapZoom(1);
+    setActiveWeaveRowFromBottom(1);
+    const el = bitmapScrollRef.current;
+    if (el) {
+      el.scrollLeft = 0;
+      el.scrollTop = 0;
+    }
+  }, [piece?.id, open]);
+
+  useEffect(() => {
+    const dims = piece && isWeavePiece(piece) ? getWeaveDimensions(piece) : null;
+    const maxRows =
+      dims?.wefts ?? (preview && preview.type === 'bitmap' ? preview.rows : null);
+    if (!maxRows) return;
+    setActiveWeaveRowFromBottom((row) =>
+      Math.min(Math.max(1, row), maxRows)
+    );
+  }, [preview, piece]);
 
   const handleSaveImage = () => {
     if (!preview || !piece) return;
@@ -64,7 +139,14 @@ export function DetailModal({
           const row = preview.grid[y] ?? [];
           for (let x = 0; x < preview.cols; x++) {
             const v = row[x] ?? 0;
-            ctx.fillStyle = v ? '#1a1a1a' : '#f7f5f0';
+            ctx.fillStyle =
+              preview.type === 'binary'
+                ? v === 0
+                  ? '#1a1a1a'
+                  : '#f7f5f0'
+                : v
+                  ? '#1a1a1a'
+                  : '#f7f5f0';
             ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
           }
         }
@@ -95,7 +177,16 @@ export function DetailModal({
   const handleCopyBinary = async () => {
     if (!piece) return;
     try {
-      // Always copy a true 0/1 grid, regardless of current display mode.
+      if (piece.type === 'binary') {
+        const patternPreview = await getPreviewAsync(piece);
+        if (patternPreview.type !== 'binary') return;
+        await navigator.clipboard.writeText(
+          bitmapToBinaryString(patternPreview.grid)
+        );
+        alert('Copied binary to clipboard');
+        return;
+      }
+      // For non-binary types, copy bitmap 0/1 grid representation.
       const binaryPreview = await getPreviewAsync({ ...piece, type: 'bitmap' });
       if (binaryPreview.type !== 'bitmap') return;
       await navigator.clipboard.writeText(
@@ -124,8 +215,11 @@ export function DetailModal({
   const handleSaveBinaryImage = async () => {
     if (!piece) return;
     try {
-      const binaryPreview = await getPreviewAsync({ ...piece, type: 'bitmap' });
-      if (binaryPreview.type !== 'bitmap') return;
+      const binaryPreview =
+        piece.type === 'binary'
+          ? await getPreviewAsync(piece)
+          : await getPreviewAsync({ ...piece, type: 'bitmap' });
+      if (binaryPreview.type !== 'bitmap' && binaryPreview.type !== 'binary') return;
 
       const cellSize = 8;
       const canvas = document.createElement('canvas');
@@ -142,7 +236,14 @@ export function DetailModal({
         const row = binaryPreview.grid[y] ?? [];
         for (let x = 0; x < binaryPreview.cols; x++) {
           const v = row[x] ?? 0;
-          ctx.fillStyle = v ? '#1a1a1a' : '#f7f5f0';
+            ctx.fillStyle =
+              binaryPreview.type === 'binary'
+                ? v === 0
+                  ? '#1a1a1a'
+                  : '#f7f5f0'
+                : v
+                  ? '#1a1a1a'
+                  : '#f7f5f0';
           ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
         }
       }
@@ -191,6 +292,69 @@ export function DetailModal({
     year: 'numeric',
   });
   const originalImageSource = resolvePieceImageSource(piece);
+  const chipLabel = getPieceChipLabel(piece);
+  const weavePiece = isWeavePiece(piece);
+  const weaveImageSource = weavePiece ? originalImageSource : undefined;
+  const weaveDims = weavePiece ? getWeaveDimensions(piece) : null;
+
+  const zoomOut = () =>
+    setBitmapZoom((z) => Math.max(0.5, Number((z - 0.1).toFixed(2))));
+  const zoomIn = () =>
+    setBitmapZoom((z) => Math.min(4, Number((z + 0.1).toFixed(2))));
+  const resetView = () => {
+    setBitmapZoom(1);
+    const el = bitmapScrollRef.current;
+    if (el) {
+      el.scrollLeft = 0;
+      el.scrollTop = 0;
+    }
+  };
+
+  const onBitmapPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const el = bitmapScrollRef.current;
+    if (!el) return;
+    bitmapDragRef.current = {
+      dragging: true,
+      startX: e.clientX,
+      startY: e.clientY,
+      scrollLeft: el.scrollLeft,
+      scrollTop: el.scrollTop,
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const onBitmapPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const el = bitmapScrollRef.current;
+    const drag = bitmapDragRef.current;
+    if (!el || !drag.dragging) return;
+    el.scrollLeft = drag.scrollLeft - (e.clientX - drag.startX);
+    el.scrollTop = drag.scrollTop - (e.clientY - drag.startY);
+  };
+
+  const onBitmapPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    bitmapDragRef.current.dragging = false;
+    e.currentTarget.releasePointerCapture(e.pointerId);
+  };
+  const onBitmapWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const step = 0.08;
+    if (e.deltaY > 0) {
+      setBitmapZoom((z) => Math.max(0.5, Number((z - step).toFixed(2))));
+    } else {
+      setBitmapZoom((z) => Math.min(4, Number((z + step).toFixed(2))));
+    }
+  };
+
+  const maxWeaveRows = weaveDims?.wefts ?? (preview && preview.type === 'bitmap' ? preview.rows : 1);
+  const activeHighlightRowIndex =
+    maxWeaveRows >= 1
+      ? maxWeaveRows - activeWeaveRowFromBottom
+      : null;
+  const weaveGeometry =
+    weaveDims
+      ? getSavedWeaveVerticalGeometry(weaveDims.warps, weaveDims.wefts)
+      : null;
 
   return (
     <div
@@ -204,7 +368,7 @@ export function DetailModal({
         <header className="flex flex-wrap items-center gap-3 border-b border-border px-6 py-4">
           <h2 className="text-xl font-normal text-text">{piece.title}</h2>
           <span className=" bg-border px-2 py-0.5 text-xs font-medium text-text">
-            {piece.type === 'ascii' ? 'ASCII' : 'BITMAP'}
+            {chipLabel}
           </span>
           {piece.author && (
             <span className="text-sm text-muted">by {piece.author}</span>
@@ -213,25 +377,127 @@ export function DetailModal({
         </header>
 
         <div className="flex-1 overflow-auto p-6">
-          <div
-            ref={artRef}
-            className="inline-block min-w-0 border border-border bg-bg p-4"
-          >
-            {preview ? (
-              preview.type === 'ascii' ? (
+          {preview ? (
+            preview.type === 'ascii' ? (
+              <div className="inline-block min-w-0 border border-border bg-bg p-4">
                 <pre
                   className="whitespace-pre font-mono text-text text-sm leading-tight"
                   style={{ fontFamily: 'IBM Plex Mono, monospace' }}
                 >
                   {preview.output}
                 </pre>
-              ) : (
-                <BitmapDisplay grid={preview.grid} />
-              )
+              </div>
             ) : (
-              <span className="text-muted">Loading…</span>
-            )}
-          </div>
+              <div className="w-full">
+                <div className="mb-2 flex items-center justify-between gap-3 text-[11px] text-muted">
+                  <span>
+                    {weavePiece && preview?.type === 'bitmap'
+                      ? `Row ${activeWeaveRowFromBottom} of ${maxWeaveRows} · drag to pan, use +/- to zoom.`
+                      : 'Drag to pan, use +/- to zoom.'}
+                  </span>
+                  <div className="flex items-center gap-2 text-xs">
+                    {weavePiece && preview?.type === 'bitmap' && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setActiveWeaveRowFromBottom((row) =>
+                              Math.min(maxWeaveRows, row + 1)
+                            )
+                          }
+                          disabled={activeWeaveRowFromBottom >= maxWeaveRows}
+                          className="border border-border px-2 py-1 text-text hover:bg-border disabled:opacity-50"
+                        >
+                          Next row
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setActiveWeaveRowFromBottom(1)}
+                          className="border border-border px-2 py-1 text-text hover:bg-border"
+                        >
+                          Row 1
+                        </button>
+                      </>
+                    )}
+                    <button
+                      type="button"
+                      onClick={zoomOut}
+                      className="border border-border px-2 py-1 text-text hover:bg-border"
+                    >
+                      -
+                    </button>
+                    <span className="min-w-12 text-center text-muted">
+                      {Math.round(bitmapZoom * 100)}%
+                    </span>
+                    <button
+                      type="button"
+                      onClick={zoomIn}
+                      className="border border-border px-2 py-1 text-text hover:bg-border"
+                    >
+                      +
+                    </button>
+                    <button
+                      type="button"
+                      onClick={resetView}
+                      className="border border-border px-2 py-1 text-text hover:bg-border"
+                    >
+                      Reset
+                    </button>
+                  </div>
+                </div>
+                <div
+                  ref={bitmapScrollRef}
+                  onPointerDown={onBitmapPointerDown}
+                  onPointerMove={onBitmapPointerMove}
+                  onPointerUp={onBitmapPointerUp}
+                  onPointerCancel={onBitmapPointerUp}
+                  onWheel={onBitmapWheel}
+                  className="max-h-[70vh] overflow-auto border border-border bg-bg p-2 cursor-grab active:cursor-grabbing"
+                  style={{ touchAction: 'none' }}
+                >
+                  <div
+                    className="inline-block origin-top-left"
+                    style={{ transform: `scale(${bitmapZoom})` }}
+                  >
+                    {weaveImageSource ? (
+                      <div className="relative">
+                        <img
+                          src={weaveImageSource}
+                          alt={piece.title}
+                          draggable={false}
+                          className="block w-full h-auto border border-border bg-[#f7f5f0]"
+                          style={{ imageRendering: 'pixelated' }}
+                        />
+                        {preview.type === 'bitmap' &&
+                          activeHighlightRowIndex != null &&
+                          weaveGeometry && (
+                            <div
+                              className="pointer-events-none absolute left-0 right-0 border-y"
+                              style={{
+                                top: `${(weaveGeometry.topOffsetRatio + activeHighlightRowIndex * weaveGeometry.rowHeightRatio) * 100}%`,
+                                height: `${weaveGeometry.rowHeightRatio * 100}%`,
+                                backgroundColor: 'rgba(59,130,246,0.2)',
+                                borderColor: 'rgba(59,130,246,0.8)',
+                              }}
+                            />
+                          )}
+                      </div>
+                    ) : (
+                      <BitmapDisplay
+                        grid={preview.grid}
+                        mode={preview.type === 'binary' ? 'binary' : 'bitmap'}
+                        highlightRowIndex={
+                          weavePiece ? activeHighlightRowIndex : null
+                        }
+                      />
+                    )}
+                  </div>
+                </div>
+              </div>
+            )
+          ) : (
+            <span className="text-muted">Loading…</span>
+          )}
 
           <details className="mt-6 border border-border">
             <summary className="cursor-pointer px-4 py-2 text-sm text-text">
@@ -354,30 +620,50 @@ function drawGridOverlayOnCanvas(
   ctx.restore();
 }
 
-function BitmapDisplay({ grid }: { grid: number[][] }) {
+function BitmapDisplay({
+  grid,
+  mode,
+  highlightRowIndex,
+}: {
+  grid: number[][];
+  mode: 'bitmap' | 'binary';
+  highlightRowIndex: number | null;
+}) {
   if (!grid.length) return null;
-  const cell = 6;
-  const w = (grid[0]?.length ?? 0) * cell;
-  const h = grid.length * cell;
+  const cols = grid[0]?.length ?? 0;
+  const rows = grid.length;
   return (
     <svg
-      width={w}
-      height={h}
-      className="border border-border"
+      viewBox={`0 0 ${cols} ${rows}`}
+      preserveAspectRatio="xMidYMid meet"
+      className="block w-full h-auto border border-border bg-[#f7f5f0]"
       style={{ imageRendering: 'pixelated' }}
     >
       {grid.map((row, y) =>
         row.map((v, x) => (
           <rect
             key={`${y}-${x}`}
-            x={x * cell}
-            y={y * cell}
-            width={cell}
-            height={cell}
-            fill={v ? '#1a1a1a' : '#f7f5f0'}
+            x={x}
+            y={y}
+            width={1}
+            height={1}
+            fill={mode === 'binary' ? (v === 0 ? '#1a1a1a' : '#f7f5f0') : v ? '#1a1a1a' : '#f7f5f0'}
           />
         ))
       )}
+      {highlightRowIndex != null &&
+        highlightRowIndex >= 0 &&
+        highlightRowIndex < rows && (
+          <rect
+            x={0}
+            y={highlightRowIndex}
+            width={cols}
+            height={1}
+            fill="rgba(59,130,246,0.2)"
+            stroke="rgba(59,130,246,0.8)"
+            strokeWidth={0.08}
+          />
+        )}
     </svg>
   );
 }

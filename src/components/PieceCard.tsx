@@ -8,6 +8,16 @@ interface PieceCardProps {
   cardRef?: (el: HTMLElement | null) => void;
 }
 
+function getPieceChipLabel(piece: Piece): string {
+  if (piece.pieceKind === 'weave') return 'PATTERN';
+  if (piece.pieceKind === 'pattern') return 'PATTERN';
+  if (piece.type === 'binary') return 'PATTERN';
+  const title = piece.title.toLowerCase();
+  if (title.includes('pattern')) return 'PATTERN';
+  if (title.includes('weave')) return 'PATTERN';
+  return piece.type === 'ascii' ? 'ASCII' : 'BITMAP';
+}
+
 export function PieceCard({ piece, onClick, cardRef }: PieceCardProps) {
   const syncPreview = renderPreviewSync(piece);
   const [asyncPreview, setAsyncPreview] = useState<typeof syncPreview>(null);
@@ -42,6 +52,7 @@ export function PieceCard({ piece, onClick, cardRef }: PieceCardProps) {
     day: 'numeric',
     year: 'numeric',
   });
+  const chipLabel = getPieceChipLabel(piece);
 
   if (!preview) {
     return (
@@ -69,7 +80,7 @@ export function PieceCard({ piece, onClick, cardRef }: PieceCardProps) {
                 : 'bg-border text-text'
             }`}
           >
-            {piece.type === 'ascii' ? 'ASCII' : 'BITMAP'}
+            {chipLabel}
           </span>
         </div>
       </article>
@@ -120,6 +131,8 @@ export function PieceCard({ piece, onClick, cardRef }: PieceCardProps) {
           >
             {asciiThumbnail}
           </pre>
+        ) : type === 'binary' ? (
+          <PatternThumbnail grid={preview.grid} />
         ) : (
           <BitmapThumbnail grid={preview.grid} />
         )}
@@ -131,7 +144,7 @@ export function PieceCard({ piece, onClick, cardRef }: PieceCardProps) {
         )}
         <p className="text-xs text-muted">{dateStr}</p>
         <span className="mt-auto inline-block w-fit bg-border px-2 py-0.5 text-xs font-medium text-text">
-          {piece.type === 'ascii' ? 'ASCII' : 'BITMAP'}
+          {chipLabel}
         </span>
       </div>
     </article>
@@ -158,6 +171,33 @@ function BitmapThumbnail({ grid }: { grid: number[][] }) {
             width={1}
             height={1}
             fill={v ? '#1a1a1a' : '#f7f5f0'}
+          />
+        ))
+      )}
+    </svg>
+  );
+}
+
+function PatternThumbnail({ grid }: { grid: number[][] }) {
+  if (!grid.length) return <span className="text-xs text-muted">…</span>;
+  const rows = grid.length;
+  const cols = grid[0]?.length ?? 0;
+  return (
+    <svg
+      viewBox={`0 0 ${cols} ${rows}`}
+      preserveAspectRatio="xMidYMid meet"
+      className="absolute inset-0 h-full w-full border border-border"
+      style={{ imageRendering: 'pixelated' }}
+    >
+      {grid.map((row, y) =>
+        row.map((v, x) => (
+          <rect
+            key={`${y}-${x}`}
+            x={x}
+            y={y}
+            width={1}
+            height={1}
+            fill={v === 0 ? '#1a1a1a' : '#f7f5f0'}
           />
         ))
       )}

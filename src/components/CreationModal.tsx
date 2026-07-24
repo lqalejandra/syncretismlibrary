@@ -7,6 +7,11 @@ import {
   textToCanvas,
   canvasToAscii,
   canvasToBitmap,
+  canvasToBinaryPattern,
+  formatTextAsBinaryValues,
+  binaryValuesToGrid,
+  invertBinaryGrid,
+  repeatBinaryGrid,
   getCharSetForPiece,
 } from '../conversion';
 import type { PreviewResult } from '../preview';
@@ -24,10 +29,12 @@ export interface CreationFormState {
   inputType: 'image' | 'text';
   inputText: string;
   inputImageDataURL: string;
-  type: 'ascii' | 'bitmap';
+  type: 'ascii' | 'bitmap' | 'binary';
   gridCols: number;
   invert: boolean;
   threshold: number;
+  binaryRepeats: number;
+  binaryValues: string;
   charSet: string;
   customChars: string;
   font: string;
@@ -46,6 +53,8 @@ const defaultFormState: CreationFormState = {
   gridCols: 80,
   invert: false,
   threshold: 128,
+  binaryRepeats: 1,
+  binaryValues: '',
   charSet: 'Standard',
   customChars: '',
   font: 'IBM Plex Mono',
@@ -72,6 +81,16 @@ export function CreationModal({
   const [selectedImageFile, setSelectedImageFile] = useState<File | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [binaryCopied, setBinaryCopied] = useState(false);
+  const [previewZoom, setPreviewZoom] = useState(1);
+  const previewScrollRef = useRef<HTMLDivElement>(null);
+  const previewDragRef = useRef({
+    dragging: false,
+    startX: 0,
+    startY: 0,
+    scrollLeft: 0,
+    scrollTop: 0,
+  });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
 
@@ -89,6 +108,8 @@ export function CreationModal({
         gridCols: editPiece.gridCols,
         invert: editPiece.invert,
         threshold: editPiece.threshold,
+        binaryRepeats: editPiece.binaryRepeats ?? 1,
+        binaryValues: editPiece.binaryValues ?? '',
         charSet: editPiece.charSet ?? 'Standard',
         customChars: editPiece.customChars ?? '',
         font: editPiece.font ?? 'IBM Plex Mono',
@@ -103,7 +124,54 @@ export function CreationModal({
     setSaveError(null);
     setSelectedImageFile(null);
     setIsSaving(false);
+    setPreviewZoom(1);
   }, [open, editPiece]);
+
+  const zoomOutPreview = () =>
+    setPreviewZoom((z) => Math.max(0.5, Number((z - 0.1).toFixed(2))));
+  const zoomInPreview = () =>
+    setPreviewZoom((z) => Math.min(4, Number((z + 0.1).toFixed(2))));
+  const resetPreviewView = () => {
+    setPreviewZoom(1);
+    const el = previewScrollRef.current;
+    if (el) {
+      el.scrollLeft = 0;
+      el.scrollTop = 0;
+    }
+  };
+  const onPreviewPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const el = previewScrollRef.current;
+    if (!el) return;
+    previewDragRef.current = {
+      dragging: true,
+      startX: e.clientX,
+      startY: e.clientY,
+      scrollLeft: el.scrollLeft,
+      scrollTop: el.scrollTop,
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const onPreviewPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const el = previewScrollRef.current;
+    const drag = previewDragRef.current;
+    if (!el || !drag.dragging) return;
+    el.scrollLeft = drag.scrollLeft - (e.clientX - drag.startX);
+    el.scrollTop = drag.scrollTop - (e.clientY - drag.startY);
+  };
+  const onPreviewPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    previewDragRef.current.dragging = false;
+    e.currentTarget.releasePointerCapture(e.pointerId);
+  };
+  const onPreviewWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const step = 0.08;
+    if (e.deltaY > 0) {
+      setPreviewZoom((z) => Math.max(0.5, Number((z - step).toFixed(2))));
+    } else {
+      setPreviewZoom((z) => Math.min(4, Number((z + step).toFixed(2))));
+    }
+  };
 
   const runPreview = useCallback(
     (f: CreationFormState) => {
@@ -125,6 +193,20 @@ export function CreationModal({
                 f.threshold
               );
               setPreview({ type: 'ascii', ...out });
+            } else if (f.type === 'binary') {
+              const out = canvasToBinaryPattern(
+                canvas,
+                ctx,
+                f.threshold,
+                f.invert
+              );
+              const repeated = repeatBinaryGrid(out.grid, f.binaryRepeats);
+              setPreview({
+                type: 'binary',
+                grid: repeated,
+                cols: repeated[0]?.length ?? 0,
+                rows: repeated.length,
+              });
             } else {
               const out = canvasToBitmap(
                 canvas,
@@ -143,6 +225,21 @@ export function CreationModal({
         return;
       }
       const text = f.inputText || ' ';
+      if (f.type === 'binary') {
+        const rawValues =
+          f.binaryValues.trim() || formatTextAsBinaryValues(text);
+        const out = binaryValuesToGrid(rawValues);
+        const base = f.invert ? invertBinaryGrid(out.grid) : out.grid;
+        const repeated = repeatBinaryGrid(base, f.binaryRepeats);
+        setPreview({
+          type: 'binary',
+          grid: repeated,
+          cols: repeated[0]?.length ?? 0,
+          rows: repeated.length,
+        });
+        setPreviewError(null);
+        return;
+      }
       const { canvas, ctx } = textToCanvas(text, cols, f.font);
       if (f.type === 'ascii') {
         const out = canvasToAscii(canvas, ctx, chars, f.invert, f.threshold);
@@ -175,6 +272,7 @@ export function CreationModal({
       title: form.title.trim(),
       description: form.description.trim() || undefined,
       author: form.author.trim() || undefined,
+      pieceKind: form.type === 'binary' ? 'pattern' : editPiece?.pieceKind,
       dateAdded: editPiece?.dateAdded ?? new Date().toISOString(),
       type: form.type,
       inputType: form.inputType,
@@ -184,6 +282,11 @@ export function CreationModal({
       gridCols: form.gridCols,
       invert: form.invert,
       threshold: form.threshold,
+      binaryRepeats: form.type === 'binary' ? Math.max(1, Math.floor(form.binaryRepeats)) : undefined,
+      binaryValues:
+        form.type === 'binary'
+          ? form.binaryValues.trim() || formatTextAsBinaryValues(form.inputText || ' ')
+          : undefined,
       charSet: form.type === 'ascii' ? form.charSet : undefined,
       customChars:
         form.type === 'ascii' && form.charSet === 'Custom'
@@ -318,38 +421,45 @@ export function CreationModal({
   };
 
   const handleDragOver = (e: React.DragEvent) => e.preventDefault();
+  const binaryValues =
+    form.type === 'binary'
+      ? form.binaryValues || formatTextAsBinaryValues(form.inputText || ' ')
+      : '';
+  const handleCopyBinaryValues = async () => {
+    if (!binaryValues) return;
+    try {
+      await navigator.clipboard.writeText(binaryValues);
+      setBinaryCopied(true);
+      setTimeout(() => setBinaryCopied(false), 1200);
+    } catch (error) {
+      console.error('Failed to copy binary values', error);
+    }
+  };
 
   if (!open) return null;
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 font-sans"
+      className="fixed inset-0 z-50 flex items-stretch justify-center bg-black/30 font-sans"
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
-        className="flex max-h-[90vh] w-full max-w-6xl flex-col overflow-hidden border border-border bg-bg-card shadow-xl lg:flex-row"
+        className="flex h-full w-full flex-col overflow-hidden border border-border bg-bg-card shadow-xl lg:flex-row"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Left: controls */}
-        <div className="flex w-full flex-col gap-4 overflow-y-auto border-b border-border p-6 lg:w-[380px] lg:border-b-0 lg:border-r">
+        <div className="flex w-full shrink-0 flex-col gap-4 overflow-y-auto border-b border-border p-5 lg:w-[320px] lg:border-b-0 lg:border-r">
           <h2 className="text-lg font-normal text-text">
             {editPiece ? 'Edit piece' : 'New piece'}
           </h2>
-
-          {/* Input type */}
           <div>
-            <label className="mb-1 block text-sm text-muted">
-              Input
-            </label>
+            <label className="mb-1 block text-sm text-muted">Input</label>
             <div className="flex gap-2">
               {(['image', 'text'] as const).map((t) => (
                 <button
                   key={t}
                   type="button"
-                  onClick={() =>
-                    setForm((prev) => ({ ...prev, inputType: t }))
-                  }
-                    className={`border px-3 py-1.5 text-sm capitalize ${
+                  onClick={() => setForm((prev) => ({ ...prev, inputType: t }))}
+                  className={`border px-3 py-1.5 text-sm capitalize ${
                     form.inputType === t
                       ? 'border-accent bg-border text-text'
                       : 'border-border text-muted'
@@ -360,12 +470,11 @@ export function CreationModal({
               ))}
             </div>
           </div>
-
           {form.inputType === 'image' ? (
             <div
               onDrop={handleDrop}
               onDragOver={handleDragOver}
-              className="flex flex-col items-center justify-center border border-dashed border-border bg-bg p-6"
+              className="flex flex-col items-center justify-center border border-dashed border-border bg-bg p-5"
             >
               <input
                 ref={fileInputRef}
@@ -379,16 +488,13 @@ export function CreationModal({
                   <img
                     src={form.inputImageDataURL}
                     alt="Upload"
-                    className="max-h-32 max-w-full object-contain"
+                    className="max-h-28 max-w-full object-contain"
                   />
                   <button
                     type="button"
                     onClick={() => {
                       setSelectedImageFile(null);
-                      setForm((prev) => ({
-                        ...prev,
-                        inputImageDataURL: '',
-                      }));
+                      setForm((prev) => ({ ...prev, inputImageDataURL: '' }));
                     }}
                     className="text-sm text-accent hover:underline"
                   >
@@ -410,13 +516,19 @@ export function CreationModal({
               placeholder="Type your text…"
               value={form.inputText}
               onChange={(e) =>
-                setForm((prev) => ({ ...prev, inputText: e.target.value }))
+                setForm((prev) => ({
+                  ...prev,
+                  inputText: e.target.value,
+                  binaryValues:
+                    prev.type === 'binary' && !prev.binaryValues.trim()
+                      ? formatTextAsBinaryValues(e.target.value)
+                      : prev.binaryValues,
+                }))
               }
-              className="min-h-[100px] w-full border border-border bg-bg-card px-3 py-2 text-sm text-text placeholder:text-muted focus:border-accent focus:outline-none"
-              rows={4}
+              className="min-h-[120px] w-full border border-border bg-bg-card px-3 py-2 text-sm text-text placeholder:text-muted focus:border-accent focus:outline-none"
+              rows={6}
             />
           )}
-
           <div>
             <label className="mb-1 block text-sm text-muted">
               Title <span className="text-muted">*</span>
@@ -432,23 +544,19 @@ export function CreationModal({
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm text-muted">
-              Description
-            </label>
+            <label className="mb-1 block text-sm text-muted">Description</label>
             <textarea
               value={form.description}
               onChange={(e) =>
                 setForm((prev) => ({ ...prev, description: e.target.value }))
               }
-              className="min-h-[60px] w-full border border-border bg-bg-card px-3 py-2 text-sm text-text placeholder:text-muted focus:border-accent focus:outline-none"
+              className="min-h-[64px] w-full border border-border bg-bg-card px-3 py-2 text-sm text-text placeholder:text-muted focus:border-accent focus:outline-none"
               placeholder="Optional"
-              rows={2}
+              rows={3}
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm text-muted">
-              Author
-            </label>
+            <label className="mb-1 block text-sm text-muted">Author</label>
             <input
               type="text"
               value={form.author}
@@ -459,18 +567,57 @@ export function CreationModal({
               placeholder="Optional"
             />
           </div>
+          {form.type === 'binary' && (
+            <div>
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <label className="block text-sm text-muted">Binary values</label>
+                <button
+                  type="button"
+                  onClick={handleCopyBinaryValues}
+                  className="border border-border px-2 py-1 text-xs text-text hover:bg-border"
+                >
+                  {binaryCopied ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+              <pre className="max-h-44 overflow-auto border border-border bg-bg px-3 py-2 text-xs font-mono text-text whitespace-pre-wrap break-all">
+                {binaryValues || 'Binary output appears here.'}
+              </pre>
+            </div>
+          )}
+          <div className="mt-auto flex gap-2 pt-2">
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={!form.title.trim() || isSaving}
+              className="border border-accent bg-bg-card px-4 py-2 text-sm font-medium text-accent disabled:opacity-50 hover:bg-border"
+            >
+              {isSaving ? 'Saving…' : 'Save'}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={isSaving}
+              className="border border-border px-4 py-2 text-sm text-text hover:bg-border"
+            >
+              Cancel
+            </button>
+          </div>
+          {saveError && <p className="text-sm text-red-400">{saveError}</p>}
+        </div>
 
+        <div className="flex w-full shrink-0 flex-col gap-4 overflow-y-auto border-b border-border p-5 lg:w-[320px] lg:border-b-0 lg:border-r">
+          <h3 className="text-sm font-medium text-text">Editing Tools</h3>
           <div>
             <label className="mb-1 block text-sm text-muted">
               Conversion type
             </label>
             <div className="flex gap-2">
-              {(['ascii', 'bitmap'] as const).map((t) => (
+              {(['ascii', 'bitmap', 'binary'] as const).map((t) => (
                 <button
                   key={t}
                   type="button"
                   onClick={() => setForm((prev) => ({ ...prev, type: t }))}
-                    className={`border px-3 py-1.5 text-sm uppercase ${
+                  className={`border px-3 py-1.5 text-sm uppercase ${
                     form.type === t
                       ? 'border-accent bg-border text-text'
                       : 'border-border text-muted'
@@ -481,7 +628,6 @@ export function CreationModal({
               ))}
             </div>
           </div>
-
           <div>
             <label className="mb-1 block text-sm text-muted">
               Grid size (columns): {form.gridCols}
@@ -492,15 +638,46 @@ export function CreationModal({
               max={200}
               value={form.gridCols}
               onChange={(e) =>
-                setForm((prev) => ({
-                  ...prev,
-                  gridCols: Number(e.target.value),
-                }))
+                setForm((prev) => ({ ...prev, gridCols: Number(e.target.value) }))
               }
               className="w-full accent-accent"
             />
           </div>
-
+          <div>
+            <label className="mb-1 block text-sm text-muted">
+              Threshold: {form.threshold}
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={255}
+              value={form.threshold}
+              onChange={(e) =>
+                setForm((prev) => ({ ...prev, threshold: Number(e.target.value) }))
+              }
+              className="w-full accent-accent"
+            />
+          </div>
+          {form.type === 'binary' && (
+            <div>
+              <label className="mb-1 block text-sm text-muted">
+                Vertical repeats
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={32}
+                value={form.binaryRepeats}
+                onChange={(e) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    binaryRepeats: Math.max(1, Number(e.target.value) || 1),
+                  }))
+                }
+                className="w-full border border-border bg-bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none"
+              />
+            </div>
+          )}
           <label className="flex items-center gap-2 text-sm text-muted">
             <input
               type="checkbox"
@@ -508,11 +685,10 @@ export function CreationModal({
               onChange={(e) =>
                 setForm((prev) => ({ ...prev, invert: e.target.checked }))
               }
-              className=" border-border accent-accent"
+              className="border-border accent-accent"
             />
             Invert
           </label>
-
           <label className="flex items-center gap-2 text-sm text-muted">
             <input
               type="checkbox"
@@ -527,7 +703,6 @@ export function CreationModal({
             />
             Show preview grid + axes
           </label>
-
           <label className="flex items-center gap-2 text-sm text-muted">
             <input
               type="checkbox"
@@ -542,26 +717,6 @@ export function CreationModal({
             />
             Include grid in saved image export
           </label>
-
-          <div>
-            <label className="mb-1 block text-sm text-muted">
-              Threshold: {form.threshold}
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={255}
-              value={form.threshold}
-              onChange={(e) =>
-                setForm((prev) => ({
-                  ...prev,
-                  threshold: Number(e.target.value),
-                }))
-              }
-              className="w-full accent-accent"
-            />
-          </div>
-
           {form.type === 'ascii' && (
             <>
               <div>
@@ -603,7 +758,7 @@ export function CreationModal({
               )}
               <div>
                 <label className="mb-1 block text-sm text-muted">
-                  Text render font (for conversion)
+                  Text render font
                 </label>
                 <select
                   value={form.font}
@@ -621,65 +776,92 @@ export function CreationModal({
               </div>
             </>
           )}
-
-          <div className="flex gap-2 pt-2">
-            <button
-              type="button"
-              onClick={handleSave}
-              disabled={!form.title.trim() || isSaving}
-              className="border border-accent bg-bg-card px-4 py-2 text-sm font-medium text-accent disabled:opacity-50 hover:bg-border"
-            >
-              {isSaving ? 'Saving…' : 'Save'}
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={isSaving}
-              className="border border-border px-4 py-2 text-sm text-text hover:bg-border"
-            >
-              Cancel
-            </button>
-          </div>
-          {saveError && <p className="text-sm text-red-400">{saveError}</p>}
         </div>
 
-        {/* Right: preview */}
-        <div className="flex flex-1 flex-col overflow-hidden border-t border-border lg:border-t-0 lg:border-l-0">
-          <div className="border-b border-border px-4 py-2 text-sm text-muted">
-            Preview
-            {preview &&
-              ` — ${preview.cols} cols × ${preview.rows} rows`}
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <div className="flex items-center justify-between border-b border-border px-4 py-2 text-sm text-muted">
+            <span>
+              Preview
+              {preview && ` — ${preview.cols} cols × ${preview.rows} rows`}
+            </span>
+            <div className="flex items-center gap-2 text-xs">
+              <span>Drag to pan</span>
+              <button
+                type="button"
+                onClick={zoomOutPreview}
+                className="border border-border px-2 py-1 text-text hover:bg-border"
+              >
+                -
+              </button>
+              <span className="min-w-12 text-center">
+                {Math.round(previewZoom * 100)}%
+              </span>
+              <button
+                type="button"
+                onClick={zoomInPreview}
+                className="border border-border px-2 py-1 text-text hover:bg-border"
+              >
+                +
+              </button>
+              <button
+                type="button"
+                onClick={resetPreviewView}
+                className="border border-border px-2 py-1 text-text hover:bg-border"
+              >
+                Reset
+              </button>
+            </div>
           </div>
-          <div className="flex-1 overflow-auto bg-bg p-4">
-            {previewError && (
-              <p className="text-sm text-red-400">{previewError}</p>
-            )}
-            {preview && !previewError && (
-              <>
-                {preview.type === 'ascii' ? (
-                  <PreviewWithGrid
-                    cols={preview.cols}
-                    rows={preview.rows}
-                    showGrid={form.showPreviewGrid}
-                  >
-                    <pre
-                      className="whitespace-pre font-mono text-text text-sm leading-tight"
-                      style={{ fontFamily: `${form.font}, monospace` }}
+          <div className="flex-1 bg-bg p-4">
+            {previewError && <p className="text-sm text-red-400">{previewError}</p>}
+            <div
+              ref={previewScrollRef}
+              onPointerDown={onPreviewPointerDown}
+              onPointerMove={onPreviewPointerMove}
+              onPointerUp={onPreviewPointerUp}
+              onPointerCancel={onPreviewPointerUp}
+              onWheel={onPreviewWheel}
+              className="h-full overflow-auto border border-border bg-bg-card p-4 cursor-grab active:cursor-grabbing"
+              style={{ touchAction: 'none' }}
+            >
+              {preview && !previewError && (
+                <div
+                  className="inline-block"
+                  style={{ transform: `scale(${previewZoom})`, transformOrigin: 'top left' }}
+                >
+                  {preview.type === 'ascii' ? (
+                    <PreviewWithGrid
+                      cols={preview.cols}
+                      rows={preview.rows}
+                      showGrid={form.showPreviewGrid}
                     >
-                      {preview.output}
-                    </pre>
-                  </PreviewWithGrid>
-                ) : (
-                  <PreviewWithGrid
-                    cols={preview.cols}
-                    rows={preview.rows}
-                    showGrid={form.showPreviewGrid}
-                  >
-                    <BitmapPreview grid={preview.grid} />
-                  </PreviewWithGrid>
-                )}
-              </>
-            )}
+                      <pre
+                        className="whitespace-pre font-mono text-text text-sm leading-tight"
+                        style={{ fontFamily: `${form.font}, monospace` }}
+                      >
+                        {preview.output}
+                      </pre>
+                    </PreviewWithGrid>
+                  ) : preview.type === 'binary' ? (
+                    <PreviewWithGrid
+                      cols={preview.cols}
+                      rows={preview.rows}
+                      showGrid={form.showPreviewGrid}
+                    >
+                      <BinaryPatternPreview grid={preview.grid} />
+                    </PreviewWithGrid>
+                  ) : (
+                    <PreviewWithGrid
+                      cols={preview.cols}
+                      rows={preview.rows}
+                      showGrid={form.showPreviewGrid}
+                    >
+                      <BitmapPreview grid={preview.grid} />
+                    </PreviewWithGrid>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -708,6 +890,34 @@ function BitmapPreview({ grid }: { grid: number[][] }) {
             width={cell}
             height={cell}
             fill={v ? '#1a1a1a' : '#f7f5f0'}
+          />
+        ))
+      )}
+    </svg>
+  );
+}
+
+function BinaryPatternPreview({ grid }: { grid: number[][] }) {
+  if (!grid.length) return null;
+  const cell = 4;
+  const w = (grid[0]?.length ?? 0) * cell;
+  const h = grid.length * cell;
+  return (
+    <svg
+      width={w}
+      height={h}
+      className="border border-border"
+      style={{ imageRendering: 'pixelated' }}
+    >
+      {grid.map((row, y) =>
+        row.map((v, x) => (
+          <rect
+            key={`${y}-${x}`}
+            x={x * cell}
+            y={y * cell}
+            width={cell}
+            height={cell}
+            fill={v === 0 ? '#1a1a1a' : '#f7f5f0'}
           />
         ))
       )}

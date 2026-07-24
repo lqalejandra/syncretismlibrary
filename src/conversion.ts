@@ -126,6 +126,106 @@ export function canvasToBitmap(
   return { grid, cols: w, rows: h };
 }
 
+export function canvasToBinaryPattern(
+  canvas: HTMLCanvasElement,
+  ctx: CanvasRenderingContext2D,
+  threshold: number,
+  invert: boolean
+): { grid: number[][]; cols: number; rows: number } {
+  const w = canvas.width;
+  const h = canvas.height;
+  const grid: number[][] = [];
+  for (let y = 0; y < h; y++) {
+    const row: number[] = [];
+    for (let x = 0; x < w; x++) {
+      const bri = getPixelBrightness(ctx, x, y, false);
+      let bit = bri < threshold ? 0 : 1;
+      if (invert) bit = bit === 1 ? 0 : 1;
+      row.push(bit);
+    }
+    grid.push(row);
+  }
+  return { grid, cols: w, rows: h };
+}
+
+export function textToBinaryGrid(text: string): {
+  grid: number[][];
+  cols: number;
+  rows: number;
+} {
+  const lines = (text || ' ').split('\n');
+  const grid = lines.map((line) => {
+    const safeLine = line.length ? line : ' ';
+    const bits: number[] = [];
+    for (let i = 0; i < safeLine.length; i++) {
+      const code = safeLine.charCodeAt(i) & 0xff;
+      const bin = code.toString(2).padStart(8, '0');
+      for (let b = 0; b < bin.length; b++) {
+        bits.push(bin[b] === '1' ? 1 : 0);
+      }
+    }
+    return bits;
+  });
+  const cols = Math.max(1, ...grid.map((row) => row.length));
+  const normalized = grid.map((row) => {
+    if (row.length === cols) return row;
+    return [...row, ...Array(cols - row.length).fill(1)];
+  });
+  return { grid: normalized, cols, rows: normalized.length };
+}
+
+export function formatTextAsBinaryValues(text: string): string {
+  const lines = (text || ' ').split('\n');
+  return lines
+    .map((line) => {
+      const safeLine = line.length ? line : ' ';
+      const groups: string[] = [];
+      for (let i = 0; i < safeLine.length; i++) {
+        const code = safeLine.charCodeAt(i) & 0xff;
+        groups.push(code.toString(2).padStart(8, '0'));
+      }
+      return groups.join(' ');
+    })
+    .join('\n');
+}
+
+export function binaryValuesToGrid(values: string): {
+  grid: number[][];
+  cols: number;
+  rows: number;
+} {
+  const lines = (values || '').split('\n');
+  const parsed = lines.map((line) => {
+    const raw = line.replace(/[^01]/g, '');
+    if (!raw.length) return [1];
+    return raw.split('').map((ch) => (ch === '1' ? 1 : 0));
+  });
+  const rows = parsed.length || 1;
+  const cols = Math.max(1, ...parsed.map((row) => row.length));
+  const grid = (parsed.length ? parsed : [[1]]).map((row) => {
+    if (row.length === cols) return row;
+    return [...row, ...Array(cols - row.length).fill(1)];
+  });
+  return { grid, cols, rows };
+}
+
+export function invertBinaryGrid(grid: number[][]): number[][] {
+  return grid.map((row) => row.map((v) => (v === 1 ? 0 : 1)));
+}
+
+export function repeatBinaryGrid(grid: number[][], repeats: number): number[][] {
+  const reps = Math.max(1, Math.floor(repeats));
+  if (reps === 1 || !grid.length || !(grid[0]?.length ?? 0)) return grid;
+  const srcRows = grid.length;
+  const out: number[][] = [];
+  for (let ry = 0; ry < reps; ry++) {
+    for (let y = 0; y < srcRows; y++) {
+      out.push([...grid[y]]);
+    }
+  }
+  return out;
+}
+
 export function bitmapToBinaryString(grid: number[][]): string {
   return grid.map((row) => row.join('')).join('\n');
 }
