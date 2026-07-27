@@ -8,7 +8,7 @@ interface GalleryProps {
   sortBy: SortOption;
 }
 
-const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+const LETTERS = 'ABCÇDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 
 export function Gallery({ pieces, onPieceClick, setCardRef, sortBy }: GalleryProps) {
   if (pieces.length === 0) {

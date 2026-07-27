@@ -52,8 +52,8 @@ export function renderPreviewSync(piece: Piece): PreviewResult | null {
     let baseGrid: number[][];
     if (piece.inputType === 'text') {
       const out = piece.binaryValues?.trim()
-        ? binaryValuesToGrid(piece.binaryValues)
-        : textToBinaryGrid(piece.inputText ?? ' ');
+        ? binaryValuesToGrid(piece.binaryValues, piece.gridCols)
+        : textToBinaryGrid(piece.inputText ?? ' ', piece.gridCols);
       baseGrid = piece.invert ? invertBinaryGrid(out.grid) : out.grid;
     } else {
       const out = canvasToBinaryPattern(

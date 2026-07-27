@@ -9,9 +9,9 @@ interface PieceCardProps {
 }
 
 function getPieceChipLabel(piece: Piece): string {
+  if (piece.type === 'binary') return 'BINARY';
   if (piece.pieceKind === 'weave') return 'PATTERN';
   if (piece.pieceKind === 'pattern') return 'PATTERN';
-  if (piece.type === 'binary') return 'PATTERN';
   const title = piece.title.toLowerCase();
   if (title.includes('pattern')) return 'PATTERN';
   if (title.includes('weave')) return 'PATTERN';
@@ -47,11 +47,6 @@ export function PieceCard({ piece, onClick, cardRef }: PieceCardProps) {
   ]);
 
   const preview = syncPreview ?? asyncPreview;
-  const dateStr = new Date(piece.dateAdded).toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
   const chipLabel = getPieceChipLabel(piece);
 
   if (!preview) {
@@ -72,7 +67,6 @@ export function PieceCard({ piece, onClick, cardRef }: PieceCardProps) {
           {piece.author && (
             <p className="text-sm text-muted">{piece.author}</p>
           )}
-          <p className="text-xs text-muted">{dateStr}</p>
           <span
             className={`mt-auto inline-block w-fit px-2 py-0.5 text-xs font-medium ${
               piece.type === 'ascii'
@@ -142,7 +136,6 @@ export function PieceCard({ piece, onClick, cardRef }: PieceCardProps) {
         {piece.author && (
           <p className="text-sm text-muted">{piece.author}</p>
         )}
-        <p className="text-xs text-muted">{dateStr}</p>
         <span className="mt-auto inline-block w-fit bg-border px-2 py-0.5 text-xs font-medium text-text">
           {chipLabel}
         </span>

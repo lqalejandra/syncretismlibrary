@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 
-const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+const LETTERS = 'ABCÇDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 
 interface SidebarProps {
   pieces: { title: string }[];
@@ -10,7 +10,7 @@ interface SidebarProps {
 export function Sidebar({ pieces, onLetterClick }: SidebarProps) {
   const firstLetterByTitle = useCallback((title: string) => {
     const c = title.trim().toUpperCase()[0];
-    return c >= 'A' && c <= 'Z' ? c : null;
+    return LETTERS.includes(c) ? c : null;
   }, []);
 
   const hasLetter = useCallback(

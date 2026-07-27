@@ -148,30 +148,13 @@ export function canvasToBinaryPattern(
   return { grid, cols: w, rows: h };
 }
 
-export function textToBinaryGrid(text: string): {
+export function textToBinaryGrid(text: string, rowWidth: number): {
   grid: number[][];
   cols: number;
   rows: number;
 } {
-  const lines = (text || ' ').split('\n');
-  const grid = lines.map((line) => {
-    const safeLine = line.length ? line : ' ';
-    const bits: number[] = [];
-    for (let i = 0; i < safeLine.length; i++) {
-      const code = safeLine.charCodeAt(i) & 0xff;
-      const bin = code.toString(2).padStart(8, '0');
-      for (let b = 0; b < bin.length; b++) {
-        bits.push(bin[b] === '1' ? 1 : 0);
-      }
-    }
-    return bits;
-  });
-  const cols = Math.max(1, ...grid.map((row) => row.length));
-  const normalized = grid.map((row) => {
-    if (row.length === cols) return row;
-    return [...row, ...Array(cols - row.length).fill(1)];
-  });
-  return { grid: normalized, cols, rows: normalized.length };
+  const values = formatTextAsBinaryValues(text);
+  return binaryValuesToGrid(values, rowWidth);
 }
 
 export function formatTextAsBinaryValues(text: string): string {
@@ -189,24 +172,27 @@ export function formatTextAsBinaryValues(text: string): string {
     .join('\n');
 }
 
-export function binaryValuesToGrid(values: string): {
+export function binaryValuesToGrid(values: string, rowWidth: number): {
   grid: number[][];
   cols: number;
   rows: number;
 } {
+  const width = Math.max(1, Math.floor(rowWidth));
   const lines = (values || '').split('\n');
-  const parsed = lines.map((line) => {
+  const grid: number[][] = [];
+  for (const line of lines) {
     const raw = line.replace(/[^01]/g, '');
-    if (!raw.length) return [1];
-    return raw.split('').map((ch) => (ch === '1' ? 1 : 0));
-  });
-  const rows = parsed.length || 1;
-  const cols = Math.max(1, ...parsed.map((row) => row.length));
-  const grid = (parsed.length ? parsed : [[1]]).map((row) => {
-    if (row.length === cols) return row;
-    return [...row, ...Array(cols - row.length).fill(1)];
-  });
-  return { grid, cols, rows };
+    if (!raw.length) continue;
+    for (let i = 0; i < raw.length; i++) {
+      const bit = raw[i] === '1' ? 1 : 0;
+      grid.push(Array(width).fill(bit));
+    }
+  }
+
+  if (!grid.length) {
+    return { grid: [Array(width).fill(1)], cols: width, rows: 1 };
+  }
+  return { grid, cols: width, rows: grid.length };
 }
 
 export function invertBinaryGrid(grid: number[][]): number[][] {

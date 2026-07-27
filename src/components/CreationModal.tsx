@@ -228,7 +228,7 @@ export function CreationModal({
       if (f.type === 'binary') {
         const rawValues =
           f.binaryValues.trim() || formatTextAsBinaryValues(text);
-        const out = binaryValuesToGrid(rawValues);
+        const out = binaryValuesToGrid(rawValues, f.gridCols);
         const base = f.invert ? invertBinaryGrid(out.grid) : out.grid;
         const repeated = repeatBinaryGrid(base, f.binaryRepeats);
         setPreview({
