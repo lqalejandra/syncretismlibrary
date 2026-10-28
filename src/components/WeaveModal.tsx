@@ -4,8 +4,8 @@ import {
   useMemo,
   useRef,
   type ReactNode,
-  type WheelEvent,
 } from 'react';
+import html2canvas from 'html2canvas';
 import {
   direct_utils,
   computeDrawdown,
@@ -27,6 +27,68 @@ import type { Drawdown } from 'adacad-drafting-lib/draft';
 import type { Piece } from '../types';
 import { getPreviewAsync } from '../preview';
 
+/** Binary / pattern / weave pieces are the best weave sources. */
+function isPreferredWeaveSource(piece: Piece): boolean {
+  if (piece.type === 'binary') return true;
+  if (piece.pieceKind === 'pattern' || piece.pieceKind === 'weave') return true;
+  const title = piece.title.toLowerCase();
+  return title.includes('pattern') || title.includes('weave');
+}
+
+function pieceOptionLabel(piece: Piece): string {
+  const base = piece.author
+    ? `${piece.title} — ${piece.author}`
+    : piece.title;
+  if (isPreferredWeaveSource(piece)) return base;
+  const via =
+    piece.type === 'ascii'
+      ? 'ASCII → bitmap'
+      : piece.type === 'bitmap'
+        ? 'bitmap'
+        : piece.type;
+  return `${base} (${via})`;
+}
+
+function downloadTextFile(filename: string, contents: string) {
+  const blob = new Blob([contents], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 100);
+}
+
+function downloadDataUrl(filename: string, dataUrl: string) {
+  const a = document.createElement('a');
+  a.href = dataUrl;
+  a.download = filename;
+  a.click();
+}
+
+function formatDressingList(loom: Loom, pieceTitle: string): string {
+  const lines: string[] = [
+    `Weave dressing — ${pieceTitle}`,
+    `Direct tie-up · ${loom.threading.length} warps × ${loom.treadling.length} wefts`,
+    `Frames: ${numFrames(loom)} · Treadles: ${numTreadles(loom)}`,
+    '',
+    'Threading (warp → shaft, 0-based; -1 = unset)',
+    loom.threading.map((shaft, i) => `  ${i + 1}: ${shaft}`).join('\n'),
+    '',
+    'Treadling (pick → shafts lifted)',
+  ];
+  loom.treadling.forEach((row, i) => {
+    lines.push(`  ${i + 1}: [${row.join(', ')}]`);
+  });
+  lines.push('', 'Tie-up (shaft × treadle, true = connected)');
+  loom.tieup.forEach((row, si) => {
+    lines.push(
+      `  shaft ${si + 1}: ${row.map((on) => (on ? '1' : '0')).join('')}`
+    );
+  });
+  return lines.join('\n');
+}
+
 interface WeaveModalProps {
   open: boolean;
   pieces: Piece[];
@@ -36,7 +98,9 @@ interface WeaveModalProps {
   onClose: () => void;
 }
 
-const DEFAULT_MAX_SHAFTS = 8;
+/** Direct tie-up: frames/treadles expand to what the pattern needs (no user cap UI). */
+const DIRECT_FRAMES = 1;
+const DIRECT_TREADLES = 1;
 const DRAFT_DIM_MIN = 1;
 const DRAFT_DIM_MAX = 512;
 
@@ -44,6 +108,25 @@ function clampDraftDim(n: number): number {
   if (!Number.isFinite(n)) return DRAFT_DIM_MIN;
   return Math.min(DRAFT_DIM_MAX, Math.max(DRAFT_DIM_MIN, Math.floor(n)));
 }
+
+/** Parse a typed integer; empty/partial → null (don’t commit yet). */
+function parseTypingInt(raw: string): number | null {
+  const t = raw.trim();
+  if (t === '') return null;
+  if (!/^\d+$/.test(t)) return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Parse a typed decimal; empty/partial → null. */
+function parseTypingFloat(raw: string): number | null {
+  const t = raw.trim();
+  if (t === '' || t === '.' || t === '-') return null;
+  if (!/^\d*\.?\d*$/.test(t)) return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
+}
+
 
 /** wefts / warps; clamped so division stays stable */
 function safeDraftAspectRatio(r: number): number {
@@ -344,7 +427,8 @@ function ClassicDraftView({
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        className="max-h-[min(78vh,720px)] overflow-auto rounded border border-border bg-[#f7f5f0] p-2 cursor-grab active:cursor-grabbing"
+        className="max-h-[min(78vh,720px)] overflow-auto overscroll-contain rounded border border-border bg-[#f7f5f0] p-2 cursor-grab active:cursor-grabbing"
+        style={{ touchAction: 'pan-x pan-y' }}
       >
         <div
           className="inline-block origin-top-left"
@@ -540,7 +624,6 @@ export function WeaveModal({
   onClose,
 }: WeaveModalProps) {
   const [selectedId, setSelectedId] = useState<string>('');
-  const [maxShafts, setMaxShafts] = useState(DEFAULT_MAX_SHAFTS);
   const [epi, setEpi] = useState(12);
   const [ppi, setPpi] = useState(12);
   const [units, setUnits] = useState<LoomSettings['units']>('in');
@@ -572,35 +655,159 @@ export function WeaveModal({
   const [saveLoading, setSaveLoading] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
+  const [dirty, setDirty] = useState(false);
+  const [exportNote, setExportNote] = useState<string | null>(null);
+  const [debouncedWarps, setDebouncedWarps] = useState(80);
+  const [debouncedWefts, setDebouncedWefts] = useState(80);
+  /** String buffers so clearing/retyping doesn’t clamp mid-keystroke. */
+  const [warpsText, setWarpsText] = useState('80');
+  const [weftsText, setWeftsText] = useState('80');
+  const [epiText, setEpiText] = useState('12');
+  const [ppiText, setPpiText] = useState('12');
+  const draftCaptureRef = useRef<HTMLDivElement | null>(null);
+  const lastDimEditRef = useRef<'warps' | 'wefts'>('warps');
+  const requestCloseRef = useRef<() => void>(() => {});
+  const handleSaveRef = useRef<() => Promise<void>>(async () => {});
 
-  const preventScrollIncrement = (e: WheelEvent<HTMLInputElement>) => {
-    e.currentTarget.blur();
-  };
+  const sortedPieces = useMemo(() => {
+    const preferred = pieces.filter(isPreferredWeaveSource);
+    const other = pieces.filter((p) => !isPreferredWeaveSource(p));
+    return [...preferred, ...other];
+  }, [pieces]);
+
+  const preferredPieces = useMemo(
+    () => pieces.filter(isPreferredWeaveSource),
+    [pieces]
+  );
 
   const selectedPiece = pieces.find((p) => p.id === selectedId) ?? null;
   const editingPiece = editPieceId
     ? pieces.find((p) => p.id === editPieceId) ?? null
     : null;
 
-  const onDraftWarpsInput = (raw: number) => {
+  const commitWarps = (raw: number) => {
+    setDirty(true);
     if (lockDraftRatio) {
       const { w, h } = solveLockedFromWarps(raw, draftAspectRatioRef.current);
       setDraftWarps(w);
       setDraftWefts(h);
+      setWarpsText(String(w));
+      setWeftsText(String(h));
     } else {
-      setDraftWarps(clampDraftDim(raw));
+      const w = clampDraftDim(raw);
+      setDraftWarps(w);
+      setWarpsText(String(w));
     }
   };
 
-  const onDraftWeftsInput = (raw: number) => {
+  const commitWefts = (raw: number) => {
+    setDirty(true);
     if (lockDraftRatio) {
       const { w, h } = solveLockedFromWefts(raw, draftAspectRatioRef.current);
       setDraftWarps(w);
       setDraftWefts(h);
+      setWarpsText(String(w));
+      setWeftsText(String(h));
     } else {
-      setDraftWefts(clampDraftDim(raw));
+      const h = clampDraftDim(raw);
+      setDraftWefts(h);
+      setWeftsText(String(h));
     }
   };
+
+  const onWarpsTextChange = (raw: string) => {
+    setDirty(true);
+    lastDimEditRef.current = 'warps';
+    setWarpsText(raw);
+  };
+
+  const onWeftsTextChange = (raw: string) => {
+    setDirty(true);
+    lastDimEditRef.current = 'wefts';
+    setWeftsText(raw);
+  };
+
+  const onWarpsBlur = () => {
+    const n = parseTypingInt(warpsText);
+    commitWarps(n == null ? draftWarps : n);
+  };
+
+  const onWeftsBlur = () => {
+    const n = parseTypingInt(weftsText);
+    commitWefts(n == null ? draftWefts : n);
+  };
+
+  const onEpiTextChange = (raw: string) => {
+    setDirty(true);
+    setEpiText(raw);
+  };
+
+  const onPpiTextChange = (raw: string) => {
+    setDirty(true);
+    setPpiText(raw);
+  };
+
+  const onEpiBlur = () => {
+    const n = parseTypingFloat(epiText);
+    const next = n != null && n > 0 ? n : epi;
+    setEpi(next);
+    setEpiText(String(next));
+  };
+
+  const onPpiBlur = () => {
+    const n = parseTypingFloat(ppiText);
+    const next = n != null && n > 0 ? n : ppi;
+    setPpi(next);
+    setPpiText(String(next));
+  };
+
+  // Commit typed dims after a pause (skip empty/partial), then feed loom recompute.
+  useEffect(() => {
+    const id = setTimeout(() => {
+      const w = parseTypingInt(warpsText);
+      const h = parseTypingInt(weftsText);
+      if (lockDraftRatio) {
+        if (lastDimEditRef.current === 'warps' && w != null) {
+          const solved = solveLockedFromWarps(w, draftAspectRatioRef.current);
+          setDraftWarps(solved.w);
+          setDraftWefts(solved.h);
+          if (String(solved.h) !== weftsText) setWeftsText(String(solved.h));
+          setDebouncedWarps(solved.w);
+          setDebouncedWefts(solved.h);
+        } else if (lastDimEditRef.current === 'wefts' && h != null) {
+          const solved = solveLockedFromWefts(h, draftAspectRatioRef.current);
+          setDraftWarps(solved.w);
+          setDraftWefts(solved.h);
+          if (String(solved.w) !== warpsText) setWarpsText(String(solved.w));
+          setDebouncedWarps(solved.w);
+          setDebouncedWefts(solved.h);
+        }
+        return;
+      }
+      if (w != null) {
+        const cw = clampDraftDim(w);
+        setDraftWarps(cw);
+        setDebouncedWarps(cw);
+      }
+      if (h != null) {
+        const ch = clampDraftDim(h);
+        setDraftWefts(ch);
+        setDebouncedWefts(ch);
+      }
+    }, 320);
+    return () => clearTimeout(id);
+  }, [warpsText, weftsText, lockDraftRatio]);
+
+  // Live EPI/PPI while typing valid decimals (size readout only; no loom recompute).
+  useEffect(() => {
+    const id = setTimeout(() => {
+      const e = parseTypingFloat(epiText);
+      const p = parseTypingFloat(ppiText);
+      if (e != null && e > 0) setEpi(e);
+      if (p != null && p > 0) setPpi(p);
+    }, 160);
+    return () => clearTimeout(id);
+  }, [epiText, ppiText]);
 
   const loomSettings: LoomSettings = useMemo(
     () => ({
@@ -608,10 +815,10 @@ export function WeaveModal({
       epi,
       ppi,
       units,
-      frames: maxShafts,
-      treadles: maxShafts,
+      frames: DIRECT_FRAMES,
+      treadles: DIRECT_TREADLES,
     }),
-    [epi, ppi, units, maxShafts]
+    [epi, ppi, units]
   );
 
   const draft = useMemo(
@@ -635,10 +842,19 @@ export function WeaveModal({
 
   useEffect(() => {
     if (!open) return;
-    if (pieces.length && !selectedId) {
-      setSelectedId(pieces[0].id);
-    }
-  }, [open, pieces, selectedId]);
+    setDirty(false);
+    setSaveError(null);
+    setSaveSuccess(null);
+    setExportNote(null);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (selectedId) return;
+    const first =
+      preferredPieces[0]?.id ?? sortedPieces[0]?.id ?? pieces[0]?.id ?? '';
+    if (first) setSelectedId(first);
+  }, [open, pieces, preferredPieces, sortedPieces, selectedId]);
 
   useEffect(() => {
     if (!open) return;
@@ -714,12 +930,14 @@ export function WeaveModal({
           };
           setDraftWarps(srcW);
           setDraftWefts(srcH);
+          setWarpsText(String(srcW));
+          setWeftsText(String(srcH));
           if (lockDraftRatio && srcW >= 1) {
             draftAspectRatioRef.current = safeDraftAspectRatio(srcH / srcW);
           }
         } else {
-          wTarget = clampDraftDim(draftWarps);
-          hTarget = clampDraftDim(draftWefts);
+          wTarget = clampDraftDim(debouncedWarps);
+          hTarget = clampDraftDim(debouncedWefts);
         }
 
         const resized = resizeGridNearest(bitmapPreview.grid, wTarget, hTarget);
@@ -735,8 +953,8 @@ export function WeaveModal({
           epi,
           ppi,
           units,
-          frames: maxShafts,
-          treadles: maxShafts,
+          frames: DIRECT_FRAMES,
+          treadles: DIRECT_TREADLES,
         };
         const result = await direct_utils.computeLoomFromDrawdown(
           dd,
@@ -759,9 +977,18 @@ export function WeaveModal({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- epi/ppi/units/lockDraftRatio omitted: density edits must not refetch; lock toggle must not refetch; lockDraftRatio is read when piece switches
-  }, [open, selectedPiece, maxShafts, recomputeTick, draftWarps, draftWefts]);
+  }, [open, selectedPiece, recomputeTick, debouncedWarps, debouncedWefts]);
 
-  if (!open) return null;
+  const requestClose = () => {
+    if (saveLoading) return;
+    if (
+      dirty &&
+      !window.confirm('Discard unsaved weave changes?')
+    ) {
+      return;
+    }
+    onClose();
+  };
 
   const copyLoomJson = () => {
     if (!loom || !drawdown || !selectedPiece) return;
@@ -804,7 +1031,47 @@ export function WeaveModal({
             }
           : null,
     };
-    void navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+    void navigator.clipboard.writeText(JSON.stringify(payload, null, 2)).then(
+      () => {
+        setExportNote('Loom JSON copied.');
+        setTimeout(() => setExportNote(null), 1500);
+      }
+    );
+  };
+
+  const downloadDressingList = () => {
+    if (!loom || !selectedPiece) return;
+    const safe = selectedPiece.title.replace(/[^a-z0-9]+/gi, '_').toLowerCase();
+    downloadTextFile(
+      `${safe || 'weave'}_dressing.txt`,
+      formatDressingList(loom, selectedPiece.title)
+    );
+    setExportNote('Dressing list downloaded.');
+    setTimeout(() => setExportNote(null), 1500);
+  };
+
+  const downloadDraftPng = async () => {
+    if (!loom || !drawdown || !selectedPiece) return;
+    const safe = selectedPiece.title.replace(/[^a-z0-9]+/gi, '_').toLowerCase();
+    try {
+      if (draftCaptureRef.current) {
+        const canvas = await html2canvas(draftCaptureRef.current, {
+          backgroundColor: '#f7f5f0',
+          scale: 2,
+        });
+        downloadDataUrl(`${safe || 'weave'}_draft.png`, canvas.toDataURL('image/png'));
+      } else {
+        const dataUrl = drawdownToDataUrl(drawdown);
+        if (!dataUrl) throw new Error('Could not render draft image.');
+        downloadDataUrl(`${safe || 'weave'}_draft.png`, dataUrl);
+      }
+      setExportNote('Draft PNG downloaded.');
+      setTimeout(() => setExportNote(null), 1500);
+    } catch (e) {
+      console.error(e);
+      setExportNote('PNG export failed.');
+      setTimeout(() => setExportNote(null), 2000);
+    }
   };
 
   const handleSaveToLibrary = async () => {
@@ -838,6 +1105,7 @@ export function WeaveModal({
         includeGridInSavedImage: false,
       };
       await onSaveToLibrary(nextPiece);
+      setDirty(false);
       setSaveSuccess('Saved to library.');
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
@@ -846,103 +1114,195 @@ export function WeaveModal({
     }
   };
 
+  requestCloseRef.current = requestClose;
+  handleSaveRef.current = handleSaveToLibrary;
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        requestCloseRef.current();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        void handleSaveRef.current();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [open]);
+
+  if (!open) return null;
+
+  const canExport = Boolean(loom && drawdown && !loading);
+  const selectedIsPreferred = selectedPiece
+    ? isPreferredWeaveSource(selectedPiece)
+    : false;
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-stretch justify-center bg-black/30 font-sans"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
+      onClick={(e) => e.target === e.currentTarget && requestClose()}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Weave"
     >
       <div
         className="flex h-full w-full flex-col overflow-hidden border border-border bg-bg-card shadow-xl lg:flex-row"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex w-full shrink-0 flex-col gap-4 overflow-y-auto border-b border-border p-5 lg:w-[320px] lg:border-b-0 lg:border-r">
-          <h2 className="text-lg font-normal text-text">Weave</h2>
-          <p className="text-xs text-muted leading-relaxed">
-            For <strong className="text-text">hand weaving</strong> on a shaft
-            loom: this turns your piece’s <strong className="text-text">binary</strong>{' '}
-            grid into a{' '}
-            <strong className="text-text">direct tie-up</strong> dressing —{' '}
-            threading, tie-up, and treadling you can lift by treadle on the
-            floor. No jacquard or TC2 output. Powered by{' '}
-            <code className="text-text">adacad-drafting-lib</code>
-            {' '}(see{' '}
-            <a
-              href="https://docs.adacad.org/"
-              target="_blank"
-              rel="noreferrer"
-              className="text-accent underline"
-            >
-              AdaCAD docs
-            </a>
-            ).
-          </p>
+        {/* Left: piece + primary actions */}
+        <div className="flex w-full shrink-0 flex-col border-b border-border lg:w-[300px] lg:border-b-0 lg:border-r">
+          <div className="flex flex-1 flex-col gap-4 overflow-y-auto p-5">
+            <div>
+              <h2 className="text-lg font-normal text-text">Weave</h2>
+              <p className="mt-1 text-xs text-muted leading-relaxed">
+                Direct tie-up dressing from a binary grid for hand weaving on a
+                shaft loom.{' '}
+                <a
+                  href="https://docs.adacad.org/"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-accent underline"
+                >
+                  AdaCAD docs
+                </a>
+              </p>
+            </div>
 
-          <div>
-            <label className="mb-1 block text-sm text-muted">
-              Piece
-            </label>
-            <select
-              value={selectedId}
-              onChange={(e) => setSelectedId(e.target.value)}
-              className="w-full border border-border bg-bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none"
-            >
-              {pieces.length === 0 ? (
-                <option value="">No pieces yet</option>
-              ) : (
-                pieces.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.title}
-                    {p.author ? ` — ${p.author}` : ''}
-                  </option>
-                ))
+            <div>
+              <label className="mb-1 block text-sm text-muted">Piece</label>
+              <select
+                value={selectedId}
+                onChange={(e) => {
+                  setSelectedId(e.target.value);
+                  setDirty(true);
+                }}
+                className="w-full border border-border bg-bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none"
+              >
+                {sortedPieces.length === 0 ? (
+                  <option value="">No pieces yet</option>
+                ) : (
+                  <>
+                    {preferredPieces.length > 0 && (
+                      <optgroup label="Binary / pattern">
+                        {preferredPieces.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {pieceOptionLabel(p)}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    {sortedPieces.some((p) => !isPreferredWeaveSource(p)) && (
+                      <optgroup label="Other (via bitmap)">
+                        {sortedPieces
+                          .filter((p) => !isPreferredWeaveSource(p))
+                          .map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {pieceOptionLabel(p)}
+                            </option>
+                          ))}
+                      </optgroup>
+                    )}
+                  </>
+                )}
+              </select>
+              {selectedPiece && !selectedIsPreferred && (
+                <p className="mt-1 text-[11px] text-muted">
+                  Converted via bitmap preview — binary/pattern pieces work best.
+                </p>
               )}
-            </select>
+              {pieces.length === 0 && (
+                <p className="mt-2 text-xs text-muted">
+                  Create a binary or pattern piece first, then open Weave.
+                </p>
+              )}
+            </div>
+
+            {loom && (
+              <p className="border border-border bg-bg px-3 py-2 text-xs text-text">
+                Needs{' '}
+                <strong>{framesUsed ?? '—'}</strong> frames ·{' '}
+                <strong>{treadlesUsed ?? '—'}</strong> treadles
+              </p>
+            )}
           </div>
 
-          <button
-            type="button"
-            onClick={copyLoomJson}
-            disabled={!loom || !drawdown || loading}
-            className="border border-border bg-bg-card px-4 py-2 text-sm text-text disabled:opacity-50 hover:bg-border"
-          >
-            Copy loom JSON
-          </button>
-
-          <button
-            type="button"
-            onClick={handleSaveToLibrary}
-            disabled={!loom || !drawdown || loading || saveLoading}
-            className="border border-accent bg-bg-card px-4 py-2 text-sm font-medium text-accent disabled:opacity-50 hover:bg-border"
-          >
-            {saveLoading ? 'Saving…' : editingPiece ? 'Update weave' : 'Save to library'}
-          </button>
-          {saveError && <p className="text-xs text-red-400">{saveError}</p>}
-          {saveSuccess && <p className="text-xs text-emerald-500">{saveSuccess}</p>}
-
-          <button
-            type="button"
-            onClick={onClose}
-            className="mt-auto border border-border px-4 py-2 text-sm text-text hover:bg-border"
-          >
-            Close
-          </button>
+          <div className="sticky bottom-0 flex flex-col gap-2 border-t border-border bg-bg-card px-5 py-3">
+            <button
+              type="button"
+              onClick={handleSaveToLibrary}
+              disabled={!canExport || saveLoading}
+              className="border border-accent bg-bg-card px-4 py-2 text-sm font-medium text-accent disabled:opacity-50 hover:bg-border"
+            >
+              {saveLoading
+                ? 'Saving…'
+                : editingPiece
+                  ? 'Update weave'
+                  : 'Save to library'}
+            </button>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={copyLoomJson}
+                disabled={!canExport}
+                className="border border-border px-3 py-2 text-xs text-text disabled:opacity-50 hover:bg-border"
+              >
+                Copy JSON
+              </button>
+              <button
+                type="button"
+                onClick={() => void downloadDraftPng()}
+                disabled={!canExport}
+                className="border border-border px-3 py-2 text-xs text-text disabled:opacity-50 hover:bg-border"
+              >
+                Draft PNG
+              </button>
+              <button
+                type="button"
+                onClick={downloadDressingList}
+                disabled={!canExport}
+                className="col-span-2 border border-border px-3 py-2 text-xs text-text disabled:opacity-50 hover:bg-border"
+              >
+                Download dressing list
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={requestClose}
+              disabled={saveLoading}
+              className="border border-border px-4 py-2 text-sm text-muted hover:bg-border hover:text-text"
+            >
+              Close
+            </button>
+            {saveError && <p className="text-xs text-red-400">{saveError}</p>}
+            {saveSuccess && (
+              <p className="text-xs text-emerald-600">{saveSuccess}</p>
+            )}
+            {exportNote && <p className="text-xs text-muted">{exportNote}</p>}
+          </div>
         </div>
 
-        <div className="flex w-full shrink-0 flex-col gap-4 overflow-y-auto border-b border-border p-5 lg:w-[320px] lg:border-b-0 lg:border-r">
-          <h3 className="text-sm font-medium text-text">Edit</h3>
+        {/* Middle: draft size + density */}
+        <div className="flex w-full shrink-0 flex-col gap-4 overflow-y-auto overscroll-contain border-b border-border p-5 lg:w-[300px] lg:border-b-0 lg:border-r">
+          <h3 className="text-sm font-medium text-text">Draft size</h3>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="mb-1 block text-sm text-muted">
                 Warps (ends)
               </label>
               <input
-                type="number"
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
                 min={DRAFT_DIM_MIN}
                 max={DRAFT_DIM_MAX}
-                value={draftWarps}
-                onChange={(e) => onDraftWarpsInput(Number(e.target.value))}
-                disabled={!selectedPiece || loading}
-                onWheel={preventScrollIncrement}
+                value={warpsText}
+                onChange={(e) => onWarpsTextChange(e.target.value)}
+                onBlur={onWarpsBlur}
+                disabled={!selectedPiece}
                 className="w-full border border-border bg-bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none disabled:opacity-50"
               />
             </div>
@@ -951,13 +1311,15 @@ export function WeaveModal({
                 Wefts (picks)
               </label>
               <input
-                type="number"
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
                 min={DRAFT_DIM_MIN}
                 max={DRAFT_DIM_MAX}
-                value={draftWefts}
-                onChange={(e) => onDraftWeftsInput(Number(e.target.value))}
-                disabled={!selectedPiece || loading}
-                onWheel={preventScrollIncrement}
+                value={weftsText}
+                onChange={(e) => onWeftsTextChange(e.target.value)}
+                onBlur={onWeftsBlur}
+                disabled={!selectedPiece}
                 className="w-full border border-border bg-bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none disabled:opacity-50"
               />
             </div>
@@ -976,7 +1338,7 @@ export function WeaveModal({
                   );
                 }
               }}
-              disabled={!selectedPiece || loading}
+              disabled={!selectedPiece}
             />
             <span>Lock warp/weft ratio</span>
           </label>
@@ -987,14 +1349,17 @@ export function WeaveModal({
           )}
           {sourceDims && (
             <p className="text-xs text-muted leading-relaxed">
-              Piece preview is {sourceDims.warps} × {sourceDims.wefts}. Changing
-              warps/wefts resamples that pattern (nearest-neighbor).{' '}
+              Source {sourceDims.warps} × {sourceDims.wefts}. Resamples with
+              nearest-neighbor.{' '}
               <button
                 type="button"
-                disabled={!selectedPiece || loading}
+                disabled={!selectedPiece}
                 onClick={() => {
+                  setDirty(true);
                   setDraftWarps(sourceDims.warps);
                   setDraftWefts(sourceDims.wefts);
+                  setWarpsText(String(sourceDims.warps));
+                  setWeftsText(String(sourceDims.wefts));
                   if (lockDraftRatio) {
                     draftAspectRatioRef.current = safeDraftAspectRatio(
                       sourceDims.wefts / sourceDims.warps
@@ -1007,237 +1372,215 @@ export function WeaveModal({
               </button>
             </p>
           )}
-          <div>
-            <label className="mb-1 block text-sm text-muted">
-              Max shafts / treadles (direct tie-up): {maxShafts}
-            </label>
-            <input
-              type="range"
-              min={1}
-              max={30}
-              value={maxShafts}
-              onChange={(e) => setMaxShafts(Number(e.target.value))}
-              className="w-full accent-accent"
-            />
-            <p className="mt-1 text-xs text-muted">
-              Caps at 30. The library expands the direct tie-up to at least this
-              many frames and treadles.
-            </p>
-          </div>
+
+          <h3 className="pt-2 text-sm font-medium text-text">Density</h3>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="mb-1 block text-sm text-muted">EPI</label>
               <input
-                type="number"
-                min={1}
-                step={0.1}
-                value={epi}
-                onChange={(e) => setEpi(Number(e.target.value) || 1)}
-                onWheel={preventScrollIncrement}
+                type="text"
+                inputMode="decimal"
+                value={epiText}
+                onChange={(e) => onEpiTextChange(e.target.value)}
+                onBlur={onEpiBlur}
                 className="w-full border border-border bg-bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none"
               />
             </div>
             <div>
               <label className="mb-1 block text-sm text-muted">PPI</label>
               <input
-                type="number"
-                min={1}
-                step={0.1}
-                value={ppi}
-                onChange={(e) => setPpi(Number(e.target.value) || 1)}
-                onWheel={preventScrollIncrement}
+                type="text"
+                inputMode="decimal"
+                value={ppiText}
+                onChange={(e) => onPpiTextChange(e.target.value)}
+                onBlur={onPpiBlur}
                 className="w-full border border-border bg-bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none"
               />
             </div>
           </div>
           <div>
-            <label className="mb-1 block text-sm text-muted">Units (for size)</label>
+            <label className="mb-1 block text-sm text-muted">Units</label>
             <select
               value={units}
-              onChange={(e) => setUnits(e.target.value as LoomSettings['units'])}
+              onChange={(e) => {
+                setDirty(true);
+                setUnits(e.target.value as LoomSettings['units']);
+              }}
               className="w-full border border-border bg-bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none"
             >
               <option value="in">inches</option>
               <option value="cm">cm</option>
             </select>
           </div>
+          <p className="border border-border bg-bg px-3 py-2 text-xs text-text">
+            Cloth size (live){' '}
+            {physicalWidth != null && physicalLength != null ? (
+              <>
+                ≈ <strong>{physicalWidth.toFixed(2)}</strong> ×{' '}
+                <strong>{physicalLength.toFixed(2)}</strong>
+                {units === 'in' ? ' in' : ' cm'}
+              </>
+            ) : (
+              <span className="text-muted">—</span>
+            )}
+          </p>
+          <p className="text-[11px] text-muted">
+            EPI / PPI update size immediately. Warp / weft changes recompute the
+            loom after a short pause.
+          </p>
           <button
             type="button"
-            onClick={() => setRecomputeTick((n) => n + 1)}
+            onClick={() => {
+              setDirty(true);
+              setRecomputeTick((n) => n + 1);
+            }}
             disabled={!selectedPiece || loading}
-            className="border border-accent bg-bg-card px-4 py-2 text-sm font-medium text-accent disabled:opacity-50 hover:bg-border"
+            className="border border-border px-4 py-2 text-sm text-text disabled:opacity-50 hover:bg-border"
           >
             Regenerate loom
           </button>
         </div>
 
+        {/* Right: draft view */}
         <div className="flex flex-1 flex-col overflow-hidden">
-          <div className="border-b border-border px-4 py-2 text-sm text-muted">
-            Classic draft layout
-            {dims &&
-              ` — ${dims.warps} ends × ${dims.wefts} picks (from binary preview)`}
+          <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-2 text-sm text-muted">
+            <span>
+              Classic draft
+              {dims && ` — ${dims.warps} ends × ${dims.wefts} picks`}
+            </span>
+            {loading && <span className="text-xs">Computing…</span>}
           </div>
-          <div className="flex-1 overflow-auto bg-bg p-4 text-sm">
-            {error && (
-              <p className="mb-2 text-sm text-red-400">{error}</p>
-            )}
+          <div className="relative flex-1 overflow-auto bg-bg p-4 text-sm">
+            {error && <p className="mb-2 text-sm text-red-400">{error}</p>}
             {!selectedPiece && (
-              <p className="text-muted">Select a piece to generate a loom.</p>
+              <div className="flex h-full min-h-[200px] items-center justify-center border border-dashed border-border bg-bg-card p-6 text-center">
+                <p className="max-w-sm text-sm text-muted">
+                  Select a binary or pattern piece to generate a direct tie-up
+                  draft.
+                </p>
+              </div>
             )}
-            {loading && <p className="text-muted">Computing loom…</p>}
-            {loom && !loading && (
-              <div className="space-y-6">
-                {drawdown && (
-                  <section>
-                    <ClassicDraftView loom={loom} drawdown={drawdown} />
-                  </section>
-                )}
+            {selectedPiece && loading && !loom && (
+              <div className="flex h-full min-h-[200px] items-center justify-center border border-border bg-bg-card p-6">
+                <p className="animate-pulse text-sm text-muted">
+                  Computing loom…
+                </p>
+              </div>
+            )}
+            {loom && drawdown && (
+              <div
+                className={`space-y-4 ${loading ? 'opacity-50 transition-opacity' : ''}`}
+              >
+                <div ref={draftCaptureRef}>
+                  <ClassicDraftView loom={loom} drawdown={drawdown} />
+                </div>
 
-                {draft && (
-                  <section>
-                    <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">
-                      Draft (AdaCAD)
-                    </h3>
-                    <dl className="space-y-1 border border-border bg-bg-card p-3 text-xs text-text">
-                      <div className="flex justify-between gap-4">
-                        <dt className="text-muted">Name</dt>
-                        <dd className="text-right font-medium">{getDraftName(draft)}</dd>
-                      </div>
-                      <div className="flex justify-between gap-4">
-                        <dt className="text-muted">Draft id</dt>
-                        <dd className="font-mono text-[11px]">{draft.id}</dd>
-                      </div>
-                      <div className="flex justify-between gap-4">
-                        <dt className="text-muted">Drawdown</dt>
-                        <dd>
-                          {warps(draft.drawdown)} warps × {wefts(draft.drawdown)} wefts
-                        </dd>
-                      </div>
-                    </dl>
-                  </section>
-                )}
-
-                <section>
-                  <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">
-                    Dressing (library summary)
-                  </h3>
-                  {dressingRows.length === 0 ? (
-                    <p className="text-xs text-muted">No dressing rows returned.</p>
-                  ) : (
-                    <div className="max-h-[20vh] overflow-y-auto border border-border bg-bg-card">
-                      <dl className="space-y-1 p-3 text-xs text-text">
-                        {dressingRows.map((row) => (
-                          <div
-                            key={row.label}
-                            className="flex justify-between gap-4 border-b border-border/60 pb-1 last:border-0 last:pb-0"
-                          >
-                            <dt className="shrink-0 text-muted">{row.label}</dt>
-                            <dd className="text-right">{row.value}</dd>
-                          </div>
-                        ))}
-                      </dl>
-                    </div>
-                  )}
-                </section>
-
-                <section>
-                  <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">
-                    Physical size (from EPI / PPI)
-                  </h3>
-                  <p className="border border-border bg-bg-card p-3 text-xs text-text">
-                    {physicalWidth != null && physicalLength != null ? (
-                      <>
-                        ≈{' '}
-                        <strong>{physicalWidth.toFixed(2)}</strong>
-                        {' × '}
-                        <strong>{physicalLength.toFixed(2)}</strong>
-                        {loomSettings.units === 'in' ? ' in' : ' cm'}
-                        {' '}
-                        (width × length)
-                      </>
-                    ) : (
-                      <span className="text-muted">—</span>
-                    )}
-                  </p>
-                </section>
-
-                <section>
-                  <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">
-                    Loom usage
-                  </h3>
-                  <p className="text-xs text-text">
-                    Frames used:{' '}
-                    <strong>{framesUsed ?? '—'}</strong>
-                    {' · '}
-                    Treadles used:{' '}
-                    <strong>{treadlesUsed ?? '—'}</strong>
-                    {maxShafts ? (
-                      <span className="text-muted">
-                        {' '}
-                        (max shafts / treadles setting: {maxShafts})
-                      </span>
-                    ) : null}
-                  </p>
-                </section>
-
-                <section>
-                  <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">
-                    Round-trip check (loom → drawdown)
-                  </h3>
-                  {roundTripLoading && (
-                    <p className="text-xs text-muted">Recomputing drawdown…</p>
-                  )}
-                  {!roundTripLoading && roundTrip && dims && (
-                    <div className="space-y-2 border border-border bg-bg-card p-3 text-xs text-text">
-                      <p>
-                        Size after <code className="text-[11px]">computeDrawdown</code>
-                        :{' '}
-                        <strong>{warps(roundTrip)}</strong> ×{' '}
-                        <strong>{wefts(roundTrip)}</strong>
-                        {' · '}
-                        Source preview:{' '}
-                        <strong>{dims.warps}</strong> × <strong>{dims.wefts}</strong>
-                      </p>
-                      {roundTripMismatch === null ? (
-                        <p className="text-amber-600/90">
-                          Sizes differ — cell-by-cell compare skipped.
-                        </p>
-                      ) : roundTripMismatch === 0 ? (
-                        <p className="text-emerald-600/90">
-                          All cells match the source drawdown ({warps(roundTrip)}×
-                          {wefts(roundTrip)}).
-                        </p>
-                      ) : (
-                        <p className="text-amber-600/90">
-                          {roundTripMismatch} cell(s) differ from the source drawdown.
-                        </p>
-                      )}
-                    </div>
-                  )}
-                  {!roundTripLoading && !roundTrip && (
-                    <p className="text-xs text-muted">Could not compute round-trip.</p>
-                  )}
-                </section>
-
-                <details className="border border-border bg-bg-card p-3 text-xs">
-                  <summary className="cursor-pointer font-medium text-text">
-                    Raw threading / tie-up / treadling (copy-friendly)
+                <details className="border border-border bg-bg-card">
+                  <summary className="cursor-pointer px-4 py-2 text-sm text-text">
+                    Details
                   </summary>
-                  <div className="mt-3 space-y-3 text-muted">
-                    <div>
-                      <p className="mb-1 font-medium text-text">Threading</p>
-                      <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px]">
-                        {loom.threading.join(', ')}
-                      </pre>
-                    </div>
-                    <div>
-                      <p className="mb-1 font-medium text-text">Treadling</p>
-                      <pre className="max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-text">
-                        {loom.treadling
-                          .map((row, i) => `${i}: [${row.join(', ')}]`)
-                          .join('\n')}
-                      </pre>
-                    </div>
+                  <div className="space-y-4 border-t border-border px-4 py-3 text-xs">
+                    {draft && (
+                      <section>
+                        <h3 className="mb-2 font-medium uppercase tracking-wide text-muted">
+                          Draft (AdaCAD)
+                        </h3>
+                        <dl className="space-y-1 text-text">
+                          <div className="flex justify-between gap-4">
+                            <dt className="text-muted">Name</dt>
+                            <dd className="text-right font-medium">
+                              {getDraftName(draft)}
+                            </dd>
+                          </div>
+                          <div className="flex justify-between gap-4">
+                            <dt className="text-muted">Draft id</dt>
+                            <dd className="font-mono text-[11px]">{draft.id}</dd>
+                          </div>
+                          <div className="flex justify-between gap-4">
+                            <dt className="text-muted">Drawdown</dt>
+                            <dd>
+                              {warps(draft.drawdown)} × {wefts(draft.drawdown)}
+                            </dd>
+                          </div>
+                        </dl>
+                      </section>
+                    )}
+
+                    <section>
+                      <h3 className="mb-2 font-medium uppercase tracking-wide text-muted">
+                        Dressing summary
+                      </h3>
+                      {dressingRows.length === 0 ? (
+                        <p className="text-muted">No dressing rows returned.</p>
+                      ) : (
+                        <dl className="space-y-1 text-text">
+                          {dressingRows.map((row) => (
+                            <div
+                              key={row.label}
+                              className="flex justify-between gap-4"
+                            >
+                              <dt className="shrink-0 text-muted">{row.label}</dt>
+                              <dd className="text-right">{row.value}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                      )}
+                    </section>
+
+                    <section>
+                      <h3 className="mb-2 font-medium uppercase tracking-wide text-muted">
+                        Round-trip check
+                      </h3>
+                      {roundTripLoading && (
+                        <p className="text-muted">Recomputing drawdown…</p>
+                      )}
+                      {!roundTripLoading && roundTrip && dims && (
+                        <div className="space-y-1 text-text">
+                          <p>
+                            {warps(roundTrip)} × {wefts(roundTrip)} vs source{' '}
+                            {dims.warps} × {dims.wefts}
+                          </p>
+                          {roundTripMismatch === null ? (
+                            <p className="text-amber-600/90">
+                              Sizes differ — compare skipped.
+                            </p>
+                          ) : roundTripMismatch === 0 ? (
+                            <p className="text-emerald-600/90">
+                              All cells match.
+                            </p>
+                          ) : (
+                            <p className="text-amber-600/90">
+                              {roundTripMismatch} cell(s) differ.
+                            </p>
+                          )}
+                        </div>
+                      )}
+                      {!roundTripLoading && !roundTrip && (
+                        <p className="text-muted">Could not compute round-trip.</p>
+                      )}
+                    </section>
+
+                    <section>
+                      <h3 className="mb-2 font-medium uppercase tracking-wide text-muted">
+                        Raw threading / treadling
+                      </h3>
+                      <div className="space-y-3 text-muted">
+                        <div>
+                          <p className="mb-1 font-medium text-text">Threading</p>
+                          <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px]">
+                            {loom.threading.join(', ')}
+                          </pre>
+                        </div>
+                        <div>
+                          <p className="mb-1 font-medium text-text">Treadling</p>
+                          <pre className="max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-text">
+                            {loom.treadling
+                              .map((row, i) => `${i}: [${row.join(', ')}]`)
+                              .join('\n')}
+                          </pre>
+                        </div>
+                      </div>
+                    </section>
                   </div>
                 </details>
               </div>

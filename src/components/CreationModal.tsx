@@ -62,11 +62,24 @@ const defaultFormState: CreationFormState = {
   includeGridInSavedImage: false,
 };
 
+const TYPE_LABELS: Record<CreationFormState['type'], string> = {
+  ascii: 'ASCII',
+  bitmap: 'Bitmap',
+  binary: 'Pattern',
+};
+
+const IMAGE_ACCEPT = 'image/png,image/jpeg,image/jpg,image/gif,image/webp';
+const IMAGE_TYPE_RE = /^image\/(png|jpeg|jpg|gif|webp)$/i;
+
 interface CreationModalProps {
   open: boolean;
   editPiece: Piece | null;
   onClose: () => void;
   onSave: (piece: Piece) => Promise<void> | void;
+}
+
+function formsEqual(a: CreationFormState, b: CreationFormState): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 export function CreationModal({
@@ -76,6 +89,8 @@ export function CreationModal({
   onSave,
 }: CreationModalProps) {
   const [form, setForm] = useState<CreationFormState>(defaultFormState);
+  const [baselineForm, setBaselineForm] =
+    useState<CreationFormState>(defaultFormState);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [selectedImageFile, setSelectedImageFile] = useState<File | null>(null);
@@ -93,32 +108,35 @@ export function CreationModal({
   });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
+  const previewGenRef = useRef(0);
+  const handleSaveRef = useRef<() => Promise<void>>(async () => {});
+  const requestCloseRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     if (!open) return;
-    if (editPiece) {
-      setForm({
-        title: editPiece.title,
-        description: editPiece.description ?? '',
-        author: editPiece.author ?? '',
-        inputType: editPiece.inputType,
-        inputText: editPiece.inputText ?? '',
-        inputImageDataURL: resolvePieceImageSource(editPiece) ?? '',
-        type: editPiece.type,
-        gridCols: editPiece.gridCols,
-        invert: editPiece.invert,
-        threshold: editPiece.threshold,
-        binaryRepeats: editPiece.binaryRepeats ?? 1,
-        binaryValues: editPiece.binaryValues ?? '',
-        charSet: editPiece.charSet ?? 'Standard',
-        customChars: editPiece.customChars ?? '',
-        font: editPiece.font ?? 'IBM Plex Mono',
-        showPreviewGrid: editPiece.showPreviewGrid ?? true,
-        includeGridInSavedImage: editPiece.includeGridInSavedImage ?? false,
-      });
-    } else {
-      setForm(defaultFormState);
-    }
+    const next = editPiece
+      ? {
+          title: editPiece.title,
+          description: editPiece.description ?? '',
+          author: editPiece.author ?? '',
+          inputType: editPiece.inputType,
+          inputText: editPiece.inputText ?? '',
+          inputImageDataURL: resolvePieceImageSource(editPiece) ?? '',
+          type: editPiece.type,
+          gridCols: editPiece.gridCols,
+          invert: editPiece.invert,
+          threshold: editPiece.threshold,
+          binaryRepeats: editPiece.binaryRepeats ?? 1,
+          binaryValues: editPiece.binaryValues ?? '',
+          charSet: editPiece.charSet ?? 'Standard',
+          customChars: editPiece.customChars ?? '',
+          font: editPiece.font ?? 'IBM Plex Mono',
+          showPreviewGrid: editPiece.showPreviewGrid ?? true,
+          includeGridInSavedImage: editPiece.includeGridInSavedImage ?? false,
+        }
+      : defaultFormState;
+    setForm(next);
+    setBaselineForm(next);
     setPreview(null);
     setPreviewError(null);
     setSaveError(null);
@@ -126,6 +144,26 @@ export function CreationModal({
     setIsSaving(false);
     setPreviewZoom(1);
   }, [open, editPiece]);
+
+  const isDirty =
+    !formsEqual(form, baselineForm) || selectedImageFile !== null;
+  const canSave = Boolean(form.title.trim()) && !isSaving;
+  const saveDisabledReason = !form.title.trim()
+    ? 'Add a title'
+    : isSaving
+      ? 'Saving…'
+      : null;
+
+  const requestClose = useCallback(() => {
+    if (isSaving) return;
+    if (
+      isDirty &&
+      !window.confirm('Discard unsaved changes to this piece?')
+    ) {
+      return;
+    }
+    onClose();
+  }, [isDirty, isSaving, onClose]);
 
   const zoomOutPreview = () =>
     setPreviewZoom((z) => Math.max(0.5, Number((z - 0.1).toFixed(2))));
@@ -164,6 +202,8 @@ export function CreationModal({
     e.currentTarget.releasePointerCapture(e.pointerId);
   };
   const onPreviewWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    // Ctrl/⌘ + wheel zooms; plain wheel scrolls the preview pane.
+    if (!(e.ctrlKey || e.metaKey)) return;
     e.preventDefault();
     const step = 0.08;
     if (e.deltaY > 0) {
@@ -173,85 +213,103 @@ export function CreationModal({
     }
   };
 
-  const runPreview = useCallback(
-    (f: CreationFormState) => {
-      const cols = Math.max(20, Math.min(200, f.gridCols));
-      const chars =
-        f.charSet === 'Custom'
-          ? f.customChars || '@'
-          : getCharSetForPiece(f.charSet, f.customChars);
+  const hasPreviewInput =
+    form.inputType === 'image'
+      ? Boolean(form.inputImageDataURL)
+      : Boolean(form.inputText.trim()) ||
+        (form.type === 'binary' && Boolean(form.binaryValues.trim()));
 
-      if (f.inputType === 'image' && f.inputImageDataURL) {
-        imageToCanvas(f.inputImageDataURL, cols)
-          .then(({ canvas, ctx }) => {
-            if (f.type === 'ascii') {
-              const out = canvasToAscii(
-                canvas,
-                ctx,
-                chars,
-                f.invert,
-                f.threshold
-              );
-              setPreview({ type: 'ascii', ...out });
-            } else if (f.type === 'binary') {
-              const out = canvasToBinaryPattern(
-                canvas,
-                ctx,
-                f.threshold,
-                f.invert
-              );
-              const repeated = repeatBinaryGrid(out.grid, f.binaryRepeats);
-              setPreview({
-                type: 'binary',
-                grid: repeated,
-                cols: repeated[0]?.length ?? 0,
-                rows: repeated.length,
-              });
-            } else {
-              const out = canvasToBitmap(
-                canvas,
-                ctx,
-                f.threshold,
-                f.invert
-              );
-              setPreview({ type: 'bitmap', ...out });
-            }
-            setPreviewError(null);
-          })
-          .catch((err) => {
-            setPreviewError(String(err));
-            setPreview(null);
-          });
-        return;
-      }
-      const text = f.inputText || ' ';
-      if (f.type === 'binary') {
-        const rawValues =
-          f.binaryValues.trim() || formatTextAsBinaryValues(text);
-        const out = binaryValuesToGrid(rawValues, f.gridCols);
-        const base = f.invert ? invertBinaryGrid(out.grid) : out.grid;
-        const repeated = repeatBinaryGrid(base, f.binaryRepeats);
-        setPreview({
-          type: 'binary',
-          grid: repeated,
-          cols: repeated[0]?.length ?? 0,
-          rows: repeated.length,
+  const runPreview = useCallback((f: CreationFormState) => {
+    const gen = ++previewGenRef.current;
+    const cols = Math.max(20, Math.min(200, f.gridCols));
+    const chars =
+      f.charSet === 'Custom'
+        ? f.customChars || '@'
+        : getCharSetForPiece(f.charSet, f.customChars);
+
+    if (f.inputType === 'image' && f.inputImageDataURL) {
+      imageToCanvas(f.inputImageDataURL, cols)
+        .then(({ canvas, ctx }) => {
+          if (gen !== previewGenRef.current) return;
+          if (f.type === 'ascii') {
+            const out = canvasToAscii(
+              canvas,
+              ctx,
+              chars,
+              f.invert,
+              f.threshold
+            );
+            setPreview({ type: 'ascii', ...out });
+          } else if (f.type === 'binary') {
+            const out = canvasToBinaryPattern(
+              canvas,
+              ctx,
+              f.threshold,
+              f.invert
+            );
+            const repeated = repeatBinaryGrid(out.grid, f.binaryRepeats);
+            setPreview({
+              type: 'binary',
+              grid: repeated,
+              cols: repeated[0]?.length ?? 0,
+              rows: repeated.length,
+            });
+          } else {
+            const out = canvasToBitmap(canvas, ctx, f.threshold, f.invert);
+            setPreview({ type: 'bitmap', ...out });
+          }
+          setPreviewError(null);
+        })
+        .catch((err) => {
+          if (gen !== previewGenRef.current) return;
+          setPreviewError(String(err));
+          setPreview(null);
         });
-        setPreviewError(null);
-        return;
-      }
-      const { canvas, ctx } = textToCanvas(text, cols, f.font);
-      if (f.type === 'ascii') {
-        const out = canvasToAscii(canvas, ctx, chars, f.invert, f.threshold);
-        setPreview({ type: 'ascii', ...out });
-      } else {
-        const out = canvasToBitmap(canvas, ctx, f.threshold, f.invert);
-        setPreview({ type: 'bitmap', ...out });
-      }
+      return;
+    }
+
+    if (f.inputType === 'image' && !f.inputImageDataURL) {
+      if (gen !== previewGenRef.current) return;
+      setPreview(null);
       setPreviewError(null);
-    },
-    []
-  );
+      return;
+    }
+
+    if (!f.inputText.trim() && !(f.type === 'binary' && f.binaryValues.trim())) {
+      if (gen !== previewGenRef.current) return;
+      setPreview(null);
+      setPreviewError(null);
+      return;
+    }
+
+    const text = f.inputText || ' ';
+    if (f.type === 'binary') {
+      const rawValues =
+        f.binaryValues.trim() || formatTextAsBinaryValues(text);
+      const out = binaryValuesToGrid(rawValues, f.gridCols);
+      const base = f.invert ? invertBinaryGrid(out.grid) : out.grid;
+      const repeated = repeatBinaryGrid(base, f.binaryRepeats);
+      if (gen !== previewGenRef.current) return;
+      setPreview({
+        type: 'binary',
+        grid: repeated,
+        cols: repeated[0]?.length ?? 0,
+        rows: repeated.length,
+      });
+      setPreviewError(null);
+      return;
+    }
+    const { canvas, ctx } = textToCanvas(text, cols, f.font);
+    if (gen !== previewGenRef.current) return;
+    if (f.type === 'ascii') {
+      const out = canvasToAscii(canvas, ctx, chars, f.invert, f.threshold);
+      setPreview({ type: 'ascii', ...out });
+    } else {
+      const out = canvasToBitmap(canvas, ctx, f.threshold, f.invert);
+      setPreview({ type: 'bitmap', ...out });
+    }
+    setPreviewError(null);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -261,6 +319,7 @@ export function CreationModal({
     debounceRef.current = id;
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
+      previewGenRef.current += 1;
     };
   }, [open, form, runPreview]);
 
@@ -282,10 +341,14 @@ export function CreationModal({
       gridCols: form.gridCols,
       invert: form.invert,
       threshold: form.threshold,
-      binaryRepeats: form.type === 'binary' ? Math.max(1, Math.floor(form.binaryRepeats)) : undefined,
+      binaryRepeats:
+        form.type === 'binary'
+          ? Math.max(1, Math.floor(form.binaryRepeats))
+          : undefined,
       binaryValues:
         form.type === 'binary'
-          ? form.binaryValues.trim() || formatTextAsBinaryValues(form.inputText || ' ')
+          ? form.binaryValues.trim() ||
+            formatTextAsBinaryValues(form.inputText || ' ')
           : undefined,
       charSet: form.type === 'ascii' ? form.charSet : undefined,
       customChars:
@@ -301,9 +364,7 @@ export function CreationModal({
       const size = Math.round(selectedImageFile.size / 1024);
       if (size > 500) {
         if (
-          !window.confirm(
-            `This image is ~${size} KB in storage. Save anyway?`
-          )
+          !window.confirm(`This image is ~${size} KB in storage. Save anyway?`)
         ) {
           return;
         }
@@ -341,7 +402,6 @@ export function CreationModal({
               piece.inputImageDataURL = form.inputImageDataURL;
             }
           } else {
-            // Fallback for local/dev setups without storage API.
             piece.inputImageStorageKey = undefined;
             piece.inputImageURL = undefined;
             piece.inputImageDataURL = form.inputImageDataURL;
@@ -367,7 +427,10 @@ export function CreationModal({
           try {
             await deleteImageByStorageKey(editPiece.inputImageStorageKey);
           } catch (error) {
-            console.error('Failed to remove S3 image after switching input type', error);
+            console.error(
+              'Failed to remove S3 image after switching input type',
+              error
+            );
           }
         }
         piece.inputImageDataURL = undefined;
@@ -385,27 +448,28 @@ export function CreationModal({
     }
   };
 
-  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setSelectedImageFile(file);
-    setSaveError(null);
-    const reader = new FileReader();
-    reader.onload = () => {
-      setForm((prev) => ({
-        ...prev,
-        inputImageDataURL: String(reader.result),
-        inputText: '',
-      }));
-    };
-    reader.readAsDataURL(file);
-    e.target.value = '';
-  };
+  handleSaveRef.current = handleSave;
+  requestCloseRef.current = requestClose;
 
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    const file = e.dataTransfer.files?.[0];
-    if (!file || !/^image\/(png|jpeg|jpg|gif)$/i.test(file.type)) return;
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        requestCloseRef.current();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        void handleSaveRef.current();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [open]);
+
+  const applyImageFile = (file: File) => {
+    if (!IMAGE_TYPE_RE.test(file.type)) return;
     setSelectedImageFile(file);
     setSaveError(null);
     const reader = new FileReader();
@@ -420,11 +484,27 @@ export function CreationModal({
     reader.readAsDataURL(file);
   };
 
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    applyImageFile(file);
+    e.target.value = '';
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+    applyImageFile(file);
+  };
+
   const handleDragOver = (e: React.DragEvent) => e.preventDefault();
+
   const binaryValues =
     form.type === 'binary'
       ? form.binaryValues || formatTextAsBinaryValues(form.inputText || ' ')
       : '';
+
   const handleCopyBinaryValues = async () => {
     if (!binaryValues) return;
     try {
@@ -436,173 +516,246 @@ export function CreationModal({
     }
   };
 
+  const resetBinaryFromText = () => {
+    setForm((prev) => ({
+      ...prev,
+      binaryValues: formatTextAsBinaryValues(prev.inputText || ' '),
+    }));
+  };
+
   if (!open) return null;
+
+  // Threshold applies to image conversion and text→ASCII/bitmap (canvas), not text→binary.
+  const showThreshold = form.inputType === 'image' || form.type !== 'binary';
+  const showFont = form.type === 'ascii' && form.inputType === 'text';
+  const emptyPreviewHint =
+    form.inputType === 'image'
+      ? 'Drop or pick an image to preview.'
+      : form.type === 'binary'
+        ? 'Enter text or binary values to preview.'
+        : 'Enter text to preview.';
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-stretch justify-center bg-black/30 font-sans"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
+      onClick={(e) => e.target === e.currentTarget && requestClose()}
+      role="dialog"
+      aria-modal="true"
+      aria-label={editPiece ? 'Edit piece' : 'New piece'}
     >
       <div
         className="flex h-full w-full flex-col overflow-hidden border border-border bg-bg-card shadow-xl lg:flex-row"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex w-full shrink-0 flex-col gap-4 overflow-y-auto border-b border-border p-5 lg:w-[320px] lg:border-b-0 lg:border-r">
-          <h2 className="text-lg font-normal text-text">
-            {editPiece ? 'Edit piece' : 'New piece'}
-          </h2>
-          <div>
-            <label className="mb-1 block text-sm text-muted">Input</label>
-            <div className="flex gap-2">
-              {(['image', 'text'] as const).map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  onClick={() => setForm((prev) => ({ ...prev, inputType: t }))}
-                  className={`border px-3 py-1.5 text-sm capitalize ${
-                    form.inputType === t
-                      ? 'border-accent bg-border text-text'
-                      : 'border-border text-muted'
-                  }`}
-                >
-                  {t}
-                </button>
-              ))}
-            </div>
-          </div>
-          {form.inputType === 'image' ? (
-            <div
-              onDrop={handleDrop}
-              onDragOver={handleDragOver}
-              className="flex flex-col items-center justify-center border border-dashed border-border bg-bg p-5"
-            >
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/png,image/jpeg,image/jpg,image/gif"
-                onChange={handleFile}
-                className="hidden"
-              />
-              {form.inputImageDataURL ? (
-                <div className="flex flex-col items-center gap-2">
-                  <img
-                    src={form.inputImageDataURL}
-                    alt="Upload"
-                    className="max-h-28 max-w-full object-contain"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedImageFile(null);
-                      setForm((prev) => ({ ...prev, inputImageDataURL: '' }));
-                    }}
-                    className="text-sm text-accent hover:underline"
-                  >
-                    Remove
-                  </button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="text-sm text-accent hover:underline"
-                >
-                  Drop image or click to pick
-                </button>
-              )}
-            </div>
-          ) : (
-            <textarea
-              placeholder="Type your text…"
-              value={form.inputText}
-              onChange={(e) =>
-                setForm((prev) => ({
-                  ...prev,
-                  inputText: e.target.value,
-                  binaryValues:
-                    prev.type === 'binary' && !prev.binaryValues.trim()
-                      ? formatTextAsBinaryValues(e.target.value)
-                      : prev.binaryValues,
-                }))
-              }
-              className="min-h-[120px] w-full border border-border bg-bg-card px-3 py-2 text-sm text-text placeholder:text-muted focus:border-accent focus:outline-none"
-              rows={6}
-            />
-          )}
-          <div>
-            <label className="mb-1 block text-sm text-muted">
-              Title <span className="text-muted">*</span>
-            </label>
-            <input
-              type="text"
-              value={form.title}
-              onChange={(e) =>
-                setForm((prev) => ({ ...prev, title: e.target.value }))
-              }
-              className="w-full border border-border bg-bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none"
-              placeholder="Piece title"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-sm text-muted">Description</label>
-            <textarea
-              value={form.description}
-              onChange={(e) =>
-                setForm((prev) => ({ ...prev, description: e.target.value }))
-              }
-              className="min-h-[64px] w-full border border-border bg-bg-card px-3 py-2 text-sm text-text placeholder:text-muted focus:border-accent focus:outline-none"
-              placeholder="Optional"
-              rows={3}
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-sm text-muted">Author</label>
-            <input
-              type="text"
-              value={form.author}
-              onChange={(e) =>
-                setForm((prev) => ({ ...prev, author: e.target.value }))
-              }
-              className="w-full border border-border bg-bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none"
-              placeholder="Optional"
-            />
-          </div>
-          {form.type === 'binary' && (
+        <div className="flex w-full shrink-0 flex-col border-b border-border lg:w-[320px] lg:border-b-0 lg:border-r">
+          <div className="flex flex-1 flex-col gap-4 overflow-y-auto p-5">
+            <h2 className="text-lg font-normal text-text">
+              {editPiece ? 'Edit piece' : 'New piece'}
+            </h2>
+
             <div>
-              <div className="mb-1 flex items-center justify-between gap-2">
-                <label className="block text-sm text-muted">Binary values</label>
-                <button
-                  type="button"
-                  onClick={handleCopyBinaryValues}
-                  className="border border-border px-2 py-1 text-xs text-text hover:bg-border"
-                >
-                  {binaryCopied ? 'Copied' : 'Copy'}
-                </button>
-              </div>
-              <pre className="max-h-44 overflow-auto border border-border bg-bg px-3 py-2 text-xs font-mono text-text whitespace-pre-wrap break-all">
-                {binaryValues || 'Binary output appears here.'}
-              </pre>
+              <label className="mb-1 block text-sm text-muted">
+                Title <span className="text-muted">*</span>
+              </label>
+              <input
+                type="text"
+                value={form.title}
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, title: e.target.value }))
+                }
+                className="w-full border border-border bg-bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none"
+                placeholder="Piece title"
+                autoFocus={!editPiece}
+              />
             </div>
-          )}
-          <div className="mt-auto flex gap-2 pt-2">
-            <button
-              type="button"
-              onClick={handleSave}
-              disabled={!form.title.trim() || isSaving}
-              className="border border-accent bg-bg-card px-4 py-2 text-sm font-medium text-accent disabled:opacity-50 hover:bg-border"
-            >
-              {isSaving ? 'Saving…' : 'Save'}
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={isSaving}
-              className="border border-border px-4 py-2 text-sm text-text hover:bg-border"
-            >
-              Cancel
-            </button>
+
+            <div>
+              <label className="mb-1 block text-sm text-muted">Author</label>
+              <input
+                type="text"
+                value={form.author}
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, author: e.target.value }))
+                }
+                className="w-full border border-border bg-bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none"
+                placeholder="Optional"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm text-muted">Description</label>
+              <textarea
+                value={form.description}
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, description: e.target.value }))
+                }
+                className="min-h-[64px] w-full border border-border bg-bg-card px-3 py-2 text-sm text-text placeholder:text-muted focus:border-accent focus:outline-none"
+                placeholder="Optional"
+                rows={3}
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm text-muted">Input</label>
+              <div className="flex gap-2">
+                {(['image', 'text'] as const).map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() =>
+                      setForm((prev) => ({ ...prev, inputType: t }))
+                    }
+                    className={`border px-3 py-1.5 text-sm capitalize ${
+                      form.inputType === t
+                        ? 'border-accent bg-border text-text'
+                        : 'border-border text-muted'
+                    }`}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {form.inputType === 'image' ? (
+              <div
+                onDrop={handleDrop}
+                onDragOver={handleDragOver}
+                onClick={() => {
+                  if (!form.inputImageDataURL) fileInputRef.current?.click();
+                }}
+                className={`flex flex-col items-center justify-center border border-dashed border-border bg-bg p-5 ${
+                  !form.inputImageDataURL ? 'cursor-pointer' : ''
+                }`}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept={IMAGE_ACCEPT}
+                  onChange={handleFile}
+                  className="hidden"
+                />
+                {form.inputImageDataURL ? (
+                  <div className="flex flex-col items-center gap-2">
+                    <img
+                      src={form.inputImageDataURL}
+                      alt="Upload"
+                      className="max-h-28 max-w-full object-contain"
+                    />
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedImageFile(null);
+                        setForm((prev) => ({
+                          ...prev,
+                          inputImageDataURL: '',
+                        }));
+                      }}
+                      className="text-sm text-accent hover:underline"
+                    >
+                      Remove
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        fileInputRef.current?.click();
+                      }}
+                      className="text-sm text-muted hover:underline"
+                    >
+                      Replace
+                    </button>
+                  </div>
+                ) : (
+                  <span className="text-sm text-accent">
+                    Drop image or click to pick
+                  </span>
+                )}
+              </div>
+            ) : (
+              <textarea
+                placeholder="Type your text…"
+                value={form.inputText}
+                onChange={(e) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    inputText: e.target.value,
+                    binaryValues:
+                      prev.type === 'binary' && !prev.binaryValues.trim()
+                        ? formatTextAsBinaryValues(e.target.value)
+                        : prev.binaryValues,
+                  }))
+                }
+                className="min-h-[120px] w-full border border-border bg-bg-card px-3 py-2 text-sm text-text placeholder:text-muted focus:border-accent focus:outline-none"
+                rows={6}
+              />
+            )}
+
+            {form.type === 'binary' && (
+              <div>
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <label className="block text-sm text-muted">
+                    Binary values
+                  </label>
+                  <div className="flex gap-1">
+                    <button
+                      type="button"
+                      onClick={resetBinaryFromText}
+                      className="border border-border px-2 py-1 text-xs text-text hover:bg-border"
+                    >
+                      Reset from text
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCopyBinaryValues}
+                      className="border border-border px-2 py-1 text-xs text-text hover:bg-border"
+                    >
+                      {binaryCopied ? 'Copied' : 'Copy'}
+                    </button>
+                  </div>
+                </div>
+                <textarea
+                  value={form.binaryValues}
+                  onChange={(e) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      binaryValues: e.target.value,
+                    }))
+                  }
+                  placeholder="0/1 values — edit freely, or reset from text"
+                  className="max-h-44 min-h-[96px] w-full overflow-auto border border-border bg-bg px-3 py-2 font-mono text-xs text-text placeholder:text-muted focus:border-accent focus:outline-none"
+                  rows={5}
+                />
+              </div>
+            )}
           </div>
-          {saveError && <p className="text-sm text-red-400">{saveError}</p>}
+
+          <div className="sticky bottom-0 flex flex-col gap-2 border-t border-border bg-bg-card px-5 py-3">
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleSave}
+                disabled={!canSave}
+                title={saveDisabledReason ?? undefined}
+                className="border border-accent bg-bg-card px-4 py-2 text-sm font-medium text-accent disabled:opacity-50 hover:bg-border"
+              >
+                {isSaving ? 'Saving…' : 'Save'}
+              </button>
+              <button
+                type="button"
+                onClick={requestClose}
+                disabled={isSaving}
+                className="border border-border px-4 py-2 text-sm text-text hover:bg-border"
+              >
+                Cancel
+              </button>
+            </div>
+            {!form.title.trim() && (
+              <p className="text-xs text-muted">Add a title to save</p>
+            )}
+            {saveError && <p className="text-sm text-red-400">{saveError}</p>}
+          </div>
         </div>
 
         <div className="flex w-full shrink-0 flex-col gap-4 overflow-y-auto border-b border-border p-5 lg:w-[320px] lg:border-b-0 lg:border-r">
@@ -611,19 +764,19 @@ export function CreationModal({
             <label className="mb-1 block text-sm text-muted">
               Conversion type
             </label>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               {(['ascii', 'bitmap', 'binary'] as const).map((t) => (
                 <button
                   key={t}
                   type="button"
                   onClick={() => setForm((prev) => ({ ...prev, type: t }))}
-                  className={`border px-3 py-1.5 text-sm uppercase ${
+                  className={`border px-3 py-1.5 text-sm ${
                     form.type === t
                       ? 'border-accent bg-border text-text'
                       : 'border-border text-muted'
                   }`}
                 >
-                  {t}
+                  {TYPE_LABELS[t]}
                 </button>
               ))}
             </div>
@@ -638,26 +791,37 @@ export function CreationModal({
               max={200}
               value={form.gridCols}
               onChange={(e) =>
-                setForm((prev) => ({ ...prev, gridCols: Number(e.target.value) }))
+                setForm((prev) => ({
+                  ...prev,
+                  gridCols: Number(e.target.value),
+                }))
               }
               className="w-full accent-accent"
             />
+            <p className="mt-1 text-xs text-muted">
+              Higher = finer detail, more columns
+            </p>
           </div>
-          <div>
-            <label className="mb-1 block text-sm text-muted">
-              Threshold: {form.threshold}
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={255}
-              value={form.threshold}
-              onChange={(e) =>
-                setForm((prev) => ({ ...prev, threshold: Number(e.target.value) }))
-              }
-              className="w-full accent-accent"
-            />
-          </div>
+          {showThreshold && (
+            <div>
+              <label className="mb-1 block text-sm text-muted">
+                Threshold: {form.threshold}
+              </label>
+              <input
+                type="range"
+                min={0}
+                max={255}
+                value={form.threshold}
+                onChange={(e) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    threshold: Number(e.target.value),
+                  }))
+                }
+                className="w-full accent-accent"
+              />
+            </div>
+          )}
           {form.type === 'binary' && (
             <div>
               <label className="mb-1 block text-sm text-muted">
@@ -668,12 +832,16 @@ export function CreationModal({
                 min={1}
                 max={32}
                 value={form.binaryRepeats}
-                onChange={(e) =>
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  if (raw === '') return;
+                  const n = Number(raw);
+                  if (!Number.isFinite(n)) return;
                   setForm((prev) => ({
                     ...prev,
-                    binaryRepeats: Math.max(1, Number(e.target.value) || 1),
-                  }))
-                }
+                    binaryRepeats: Math.min(32, Math.max(1, Math.floor(n))),
+                  }));
+                }}
                 className="w-full border border-border bg-bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none"
               />
             </div>
@@ -756,24 +924,26 @@ export function CreationModal({
                   />
                 </div>
               )}
-              <div>
-                <label className="mb-1 block text-sm text-muted">
-                  Text render font
-                </label>
-                <select
-                  value={form.font}
-                  onChange={(e) =>
-                    setForm((prev) => ({ ...prev, font: e.target.value }))
-                  }
-                  className="w-full border border-border bg-bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none"
-                >
-                  {FONT_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {showFont && (
+                <div>
+                  <label className="mb-1 block text-sm text-muted">
+                    Text render font
+                  </label>
+                  <select
+                    value={form.font}
+                    onChange={(e) =>
+                      setForm((prev) => ({ ...prev, font: e.target.value }))
+                    }
+                    className="w-full border border-border bg-bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none"
+                  >
+                    {FONT_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </>
           )}
         </div>
@@ -813,7 +983,9 @@ export function CreationModal({
             </div>
           </div>
           <div className="flex-1 bg-bg p-4">
-            {previewError && <p className="text-sm text-red-400">{previewError}</p>}
+            {previewError && (
+              <p className="mb-2 text-sm text-red-400">{previewError}</p>
+            )}
             <div
               ref={previewScrollRef}
               onPointerDown={onPreviewPointerDown}
@@ -821,13 +993,19 @@ export function CreationModal({
               onPointerUp={onPreviewPointerUp}
               onPointerCancel={onPreviewPointerUp}
               onWheel={onPreviewWheel}
-              className="h-full overflow-auto border border-border bg-bg-card p-4 cursor-grab active:cursor-grabbing"
-              style={{ touchAction: 'none' }}
+              className="h-full overflow-auto overscroll-contain border border-border bg-bg-card p-4 cursor-grab active:cursor-grabbing"
+              style={{ touchAction: 'pan-x pan-y' }}
             >
+              {!hasPreviewInput && !previewError && (
+                <p className="text-sm text-muted">{emptyPreviewHint}</p>
+              )}
               {preview && !previewError && (
                 <div
                   className="inline-block"
-                  style={{ transform: `scale(${previewZoom})`, transformOrigin: 'top left' }}
+                  style={{
+                    transform: `scale(${previewZoom})`,
+                    transformOrigin: 'top left',
+                  }}
                 >
                   {preview.type === 'ascii' ? (
                     <PreviewWithGrid

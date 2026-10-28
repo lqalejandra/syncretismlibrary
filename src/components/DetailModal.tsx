@@ -341,6 +341,8 @@ export function DetailModal({
     e.currentTarget.releasePointerCapture(e.pointerId);
   };
   const onBitmapWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    // Ctrl/⌘ + wheel zooms; plain wheel scrolls.
+    if (!(e.ctrlKey || e.metaKey)) return;
     e.preventDefault();
     const step = 0.08;
     if (e.deltaY > 0) {
@@ -459,8 +461,8 @@ export function DetailModal({
                   onPointerUp={onBitmapPointerUp}
                   onPointerCancel={onBitmapPointerUp}
                   onWheel={onBitmapWheel}
-                  className="max-h-[70vh] overflow-auto border border-border bg-bg p-2 cursor-grab active:cursor-grabbing"
-                  style={{ touchAction: 'none' }}
+                  className="max-h-[70vh] overflow-auto overscroll-contain border border-border bg-bg p-2 cursor-grab active:cursor-grabbing"
+                  style={{ touchAction: 'pan-x pan-y' }}
                 >
                   <div
                     className="inline-block origin-top-left"
